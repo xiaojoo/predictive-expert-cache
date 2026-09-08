@@ -262,3 +262,36 @@ def test_result_contains_original_prediction_objects():
     )
 
     assert result[0] is prediction
+
+def test_prediction_scores_select_highest_scoring_experts() -> None:
+    predictions = {
+        1: PredictionScore(
+            expert_id=1,
+            score=0.25,
+            frequency_score=0.2,
+            recency_score=0.3,
+            transition_score=0.2,
+        ),
+        2: PredictionScore(
+            expert_id=2,
+            score=0.90,
+            frequency_score=0.9,
+            recency_score=0.9,
+            transition_score=0.9,
+        ),
+        3: PredictionScore(
+            expert_id=3,
+            score=0.65,
+            frequency_score=0.6,
+            recency_score=0.7,
+            transition_score=0.6,
+        ),
+    }
+
+    selected = select_top_k_predictions(
+        predictions,
+        top_k=2,
+        min_score=0.0,
+    )
+
+    assert [prediction.expert_id for prediction in selected] == [2, 3]

@@ -268,3 +268,128 @@ def test_prediction_score_has_expected_type():
     )
 
     assert isinstance(result, PredictionScore)
+
+def test_prediction_score_increases_when_frequency_improves():
+    low_frequency = make_features(
+        expert_id=7,
+        frequency_score=0.2,
+        recency=4,
+        transition_probability=0.3,
+    )
+
+    high_frequency = make_features(
+        expert_id=7,
+        frequency_score=0.8,
+        recency=4,
+        transition_probability=0.3,
+    )
+
+    low_result = calculate_prediction_score(
+        low_frequency,
+        frequency_weight=0.5,
+        recency_weight=0.2,
+        transition_weight=0.3,
+        recency_decay=8.0,
+    )
+
+    high_result = calculate_prediction_score(
+        high_frequency,
+        frequency_weight=0.5,
+        recency_weight=0.2,
+        transition_weight=0.3,
+        recency_decay=8.0,
+    )
+
+    assert high_result.score > low_result.score
+
+
+def test_prediction_score_increases_when_transition_probability_improves():
+    low_transition = make_features(
+        expert_id=7,
+        frequency_score=0.4,
+        recency=4,
+        transition_probability=0.1,
+    )
+
+    high_transition = make_features(
+        expert_id=7,
+        frequency_score=0.4,
+        recency=4,
+        transition_probability=0.9,
+    )
+
+    low_result = calculate_prediction_score(
+        low_transition,
+        frequency_weight=0.3,
+        recency_weight=0.2,
+        transition_weight=0.5,
+        recency_decay=8.0,
+    )
+
+    high_result = calculate_prediction_score(
+        high_transition,
+        frequency_weight=0.3,
+        recency_weight=0.2,
+        transition_weight=0.5,
+        recency_decay=8.0,
+    )
+
+    assert high_result.score > low_result.score
+
+
+def test_prediction_score_components_are_preserved():
+    features = make_features(
+        expert_id=17,
+        frequency_score=0.8,
+        recency=0,
+        transition_probability=0.6,
+    )
+
+    result = calculate_prediction_score(
+        features,
+        frequency_weight=0.3,
+        recency_weight=0.2,
+        transition_weight=0.5,
+        recency_decay=8.0,
+    )
+
+    assert result.expert_id == 17
+    assert result.frequency_score == 0.8
+    assert result.recency_score == 1.0
+    assert result.transition_score == 0.6
+    assert 0.0 <= result.score <= 1.0
+
+def test_prediction_scores_can_be_ordered_by_score() -> None:
+    low = calculate_prediction_score(
+        make_features(
+            expert_id=7,
+            frequency_score=0.2,
+            recency=5,
+            transition_probability=0.1,
+        ),
+        frequency_weight=1.0,
+        recency_weight=0.0,
+        transition_weight=0.0,
+        recency_decay=10.0,
+    )
+
+    high = calculate_prediction_score(
+        make_features(
+            expert_id=3,
+            frequency_score=0.8,
+            recency=5,
+            transition_probability=0.1,
+        ),
+        frequency_weight=1.0,
+        recency_weight=0.0,
+        transition_weight=0.0,
+        recency_decay=10.0,
+    )
+
+    ordered = sorted(
+        (low, high),
+        key=lambda prediction: prediction.score,
+        reverse=True,
+    )
+
+    assert [prediction.expert_id for prediction in ordered] == [3, 7]
