@@ -1,4 +1,8 @@
-from .admission import AdmissionController
+from .admission import (
+    AdmissionController,
+    AdmissionDecision,
+    AdmissionReason,
+)
 from .engine import PrefetchEngine
 from .pipeline import PipelineResult, PrefetchPipeline
 from .queue import PrefetchQueue
@@ -12,6 +16,8 @@ from .types import (
 
 __all__ = [
     "AdmissionController",
+    "AdmissionDecision",
+    "AdmissionReason",
     "PrefetchEngine",
     "PrefetchPipeline",
     "PipelineResult",
