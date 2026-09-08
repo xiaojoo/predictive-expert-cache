@@ -166,6 +166,15 @@ class PrefetchPipeline:
     # ---------------------------------------------------------
     # Engine state
     # ---------------------------------------------------------
+    def metrics(self) -> dict[str, int | float]:
+        """
+        Return a detached snapshot of pipeline metrics.
+
+        The returned dictionary is owned by the caller and does not
+        expose the internal AdmissionStats instance.
+        """
+        return dict(self.admission_stats.metrics())
+
 
     @property
     def queue_size(self) -> int:
