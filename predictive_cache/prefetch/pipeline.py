@@ -14,6 +14,7 @@ from .types import (
     PrefetchTarget,
     PrefetchTask,
 )
+from .admission_stats import AdmissionStats
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class PrefetchPipeline:
         target: PrefetchTarget = PrefetchTarget.RAM,
         admission: AdmissionController | None = None,
         auto_start: bool = True,
+        admission_stats=None,
     ) -> None:
         self.scheduler = scheduler
         self.engine = engine
@@ -72,6 +74,12 @@ class PrefetchPipeline:
 
         if auto_start:
             self.start()
+
+        self.admission_stats = (
+            admission_stats
+            if admission_stats is not None
+            else AdmissionStats()
+        )
 
     # ---------------------------------------------------------
     # Lifecycle
@@ -120,6 +128,8 @@ class PrefetchPipeline:
             )
 
             admission_decisions.append(decision)
+
+            self.admission_stats.record(decision)
 
             if not decision.admitted:
                 continue

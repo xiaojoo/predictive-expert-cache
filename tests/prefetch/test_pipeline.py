@@ -10,6 +10,7 @@ from predictive_cache.prefetch import (
     PrefetchTarget,
 )
 from predictive_cache.scheduler import PrefetchRequest
+from predictive_cache.prefetch.admission import AdmissionReason
 
 class FakeScheduler:
     def __init__(self, requests):
@@ -165,6 +166,10 @@ def test_pipeline_rejects_task_by_admission():
         assert result.submitted_tasks == []
         assert loaded == []
 
+        assert pipeline.admission_stats.total == 1
+        assert pipeline.admission_stats.accepted == 0
+        assert pipeline.admission_stats.rejected == 1
+
     finally:
         pipeline.stop()
 
@@ -206,6 +211,9 @@ def test_pipeline_admits_task():
         assert len(result.scheduled_requests) == 1
         assert len(result.submitted_tasks) == 1
         assert result.submitted_tasks[0].expert_id == 10
+        assert pipeline.admission_stats.total == 1
+        assert pipeline.admission_stats.accepted == 1
+        assert pipeline.admission_stats.rejected == 0
 
     finally:
         pipeline.stop()
