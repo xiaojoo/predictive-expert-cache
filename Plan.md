@@ -648,3 +648,13 @@ Get-ChildItem predictive_cache -Recurse -File |
 Get-ChildItem tests -Recurse -File |
     Where-Object { $_.FullName -match "predict|schedul" } |
     Select-Object FullName
+
+
+git rm -r --cached --ignore-unmatch __pycache__
+git rm -r --cached --ignore-unmatch predictive_cache/**/__pycache__
+git rm -r --cached --ignore-unmatch tests/**/__pycache__
+git rm -r --cached --ignore-unmatch predictive_expert_cache.egg-info
+
+git status --short
+
+git reset

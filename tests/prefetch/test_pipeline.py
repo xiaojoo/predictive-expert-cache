@@ -211,3 +211,67 @@ def test_pipeline_admits_task():
         pipeline.stop()
 
     assert loaded == [10]
+
+def test_pipeline_propagates_admission_decisions():
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=10,
+                score=0.9,
+                priority=0.9,
+            ),
+            PrefetchRequest(
+                expert_id=11,
+                score=0.2,
+                priority=0.9,
+            ),
+            PrefetchRequest(
+                expert_id=12,
+                score=0.9,
+                priority=0.2,
+            ),
+        ]
+    )
+
+    engine = PrefetchEngine(
+        lambda _task: None,
+        num_workers=1,
+    )
+
+    admission = AdmissionController(
+        min_priority=0.5,
+        min_confidence=0.8,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        result = pipeline.process([1])
+
+        assert len(result.scheduled_requests) == 3
+        assert len(result.admission_decisions) == 3
+
+        assert result.admission_decisions[0].admitted is True
+        assert result.admission_decisions[0].reason.value == "accept"
+
+        assert result.admission_decisions[1].admitted is False
+        assert (
+            result.admission_decisions[1].reason.value
+            == "reject_low_confidence"
+        )
+
+        assert result.admission_decisions[2].admitted is False
+        assert (
+            result.admission_decisions[2].reason.value
+            == "reject_low_priority"
+        )
+
+        assert len(result.submitted_tasks) == 1
+        assert result.submitted_tasks[0].expert_id == 10
+
+    finally:
+        pipeline.stop()

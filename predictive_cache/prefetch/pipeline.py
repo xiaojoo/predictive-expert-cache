@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import List
 
 from ..scheduler import ExpertScheduler, PrefetchRequest
-from .admission import AdmissionController
+from .admission import (
+    AdmissionController,
+    AdmissionDecision,
+)
 from .engine import PrefetchEngine
 from .types import (
     PrefetchSource,
@@ -21,6 +24,7 @@ class PipelineResult:
 
     current_experts: List[int]
     scheduled_requests: List[PrefetchRequest]
+    admission_decisions: List[AdmissionDecision]
     submitted_tasks: List[PrefetchTask]
 
 
@@ -105,28 +109,28 @@ class PrefetchPipeline:
         )
 
         submitted_tasks: list[PrefetchTask] = []
+        admission_decisions: list[AdmissionDecision] = []
 
         for request in scheduled_requests:
             task = self._request_to_task(request)
 
-            # -------------------------------------------------
-            # Admission Gate
-            # -------------------------------------------------
-            if not self.admission.admit(
+            decision = self.admission.evaluate(
                 task,
                 self.engine,
-            ):
+            )
+
+            admission_decisions.append(decision)
+
+            if not decision.admitted:
                 continue
 
-            # -------------------------------------------------
-            # Engine Submission
-            # -------------------------------------------------
             if self.engine.submit(task):
                 submitted_tasks.append(task)
 
         return PipelineResult(
             current_experts=list(current_experts),
             scheduled_requests=scheduled_requests,
+            admission_decisions=admission_decisions,
             submitted_tasks=submitted_tasks,
         )
 
