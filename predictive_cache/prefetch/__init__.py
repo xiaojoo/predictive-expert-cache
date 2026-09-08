@@ -1,3 +1,4 @@
+from .admission import AdmissionController
 from .engine import PrefetchEngine
 from .pipeline import PipelineResult, PrefetchPipeline
 from .queue import PrefetchQueue
@@ -10,6 +11,7 @@ from .types import (
 )
 
 __all__ = [
+    "AdmissionController",
     "PrefetchEngine",
     "PrefetchPipeline",
     "PipelineResult",
