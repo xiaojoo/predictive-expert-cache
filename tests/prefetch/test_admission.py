@@ -171,22 +171,46 @@ def test_duplicate_running_task_is_rejected() -> None:
 
 
 def test_full_queue_rejects_task() -> None:
-    engine = make_engine(max_queue_size=1)
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def loader(task):
+        started.set()
+        release.wait(timeout=2.0)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+        max_queue_size=1,
+    )
+
     engine.start()
 
     try:
         controller = AdmissionController()
 
+        # Occupy the worker.
         first = make_task(expert_id=41)
 
         assert engine.submit(first) is True
+        assert started.wait(timeout=2.0)
+
+        # Worker is occupied, so this task remains queued.
+        queued = make_task(expert_id=42)
+
+        assert engine.submit(queued) is True
+        assert engine.queue_size == 1
         assert engine.queue_full is True
 
-        second = make_task(expert_id=42)
+        # Admission must reject another task.
+        third = make_task(expert_id=43)
 
-        assert controller.admit(second, engine) is False
+        assert controller.admit(third, engine) is False
 
     finally:
+        release.set()
         engine.stop()
 
 
@@ -234,3 +258,82 @@ def test_negative_min_confidence_is_rejected() -> None:
 def test_confidence_above_one_is_rejected() -> None:
     with pytest.raises(ValueError, match="min_confidence"):
         AdmissionController(min_confidence=1.1)
+
+def test_priority_exact_threshold_is_admitted() -> None:
+    engine = make_engine()
+    engine.start()
+
+    try:
+        controller = AdmissionController(
+            min_priority=0.5,
+            min_confidence=0.8,
+        )
+
+        task = make_task(
+            priority=0.5,
+            confidence=0.8,
+        )
+
+        assert controller.admit(task, engine) is True
+
+    finally:
+        engine.stop()
+
+
+def test_confidence_exact_threshold_is_admitted() -> None:
+    engine = make_engine()
+    engine.start()
+
+    try:
+        controller = AdmissionController(
+            min_priority=0.5,
+            min_confidence=0.8,
+        )
+
+        task = make_task(
+            priority=0.5,
+            confidence=0.8,
+        )
+
+        assert controller.admit(task, engine) is True
+
+    finally:
+        engine.stop()
+
+
+def test_priority_just_below_threshold_is_rejected() -> None:
+    engine = make_engine()
+    engine.start()
+
+    try:
+        controller = AdmissionController(
+            min_priority=0.5,
+        )
+
+        task = make_task(
+            priority=0.499999,
+        )
+
+        assert controller.admit(task, engine) is False
+
+    finally:
+        engine.stop()
+
+
+def test_confidence_just_below_threshold_is_rejected() -> None:
+    engine = make_engine()
+    engine.start()
+
+    try:
+        controller = AdmissionController(
+            min_confidence=0.8,
+        )
+
+        task = make_task(
+            confidence=0.799999,
+        )
+
+        assert controller.admit(task, engine) is False
+
+    finally:
+        engine.stop()

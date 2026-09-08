@@ -20,9 +20,7 @@ class PipelineResult:
     """
 
     current_experts: List[int]
-
     scheduled_requests: List[PrefetchRequest]
-
     submitted_tasks: List[PrefetchTask]
 
 
@@ -38,27 +36,27 @@ class PrefetchPipeline:
               ↓
         PrefetchTask
               ↓
+        AdmissionController
+              ↓
         PrefetchEngine
               ↓
         Worker
               ↓
         Loader
 
-    The scheduler is responsible for deciding WHAT to prefetch.
-
-    The pipeline is responsible for adapting scheduler requests
-    into executable PrefetchTasks.
+    Admission is the gate between task construction
+    and engine submission.
     """
 
     def __init__(
-            self,
-            scheduler: ExpertScheduler,
-            engine: PrefetchEngine,
-            *,
-            source: PrefetchSource = PrefetchSource.NVME,
-            target: PrefetchTarget = PrefetchTarget.RAM,
-            admission: AdmissionController | None = None,
-            auto_start: bool = True,
+        self,
+        scheduler: ExpertScheduler,
+        engine: PrefetchEngine,
+        *,
+        source: PrefetchSource = PrefetchSource.NVME,
+        target: PrefetchTarget = PrefetchTarget.RAM,
+        admission: AdmissionController | None = None,
+        auto_start: bool = True,
     ) -> None:
         self.scheduler = scheduler
         self.engine = engine
@@ -94,8 +92,8 @@ class PrefetchPipeline:
     # ---------------------------------------------------------
 
     def process(
-            self,
-            current_experts: list[int],
+        self,
+        current_experts: list[int],
     ) -> PipelineResult:
 
         requests = self.scheduler.plan_prefetch(
@@ -109,16 +107,20 @@ class PrefetchPipeline:
         submitted_tasks: list[PrefetchTask] = []
 
         for request in scheduled_requests:
-            task = self._request_to_task(
-                request
-            )
+            task = self._request_to_task(request)
 
+            # -------------------------------------------------
+            # Admission Gate
+            # -------------------------------------------------
             if not self.admission.admit(
-                    task,
-                    self.engine,
+                task,
+                self.engine,
             ):
                 continue
 
+            # -------------------------------------------------
+            # Engine Submission
+            # -------------------------------------------------
             if self.engine.submit(task):
                 submitted_tasks.append(task)
 
