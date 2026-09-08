@@ -215,6 +215,11 @@ def test_pipeline_admits_task():
         assert pipeline.admission_stats.accepted == 1
         assert pipeline.admission_stats.rejected == 0
 
+        assert result.admission_stats.total == 1
+        assert result.admission_stats.accepted == 1
+        assert result.admission_stats.rejected == 0
+        assert result.admission_stats is not pipeline.admission_stats
+
     finally:
         pipeline.stop()
 
@@ -280,6 +285,77 @@ def test_pipeline_propagates_admission_decisions():
 
         assert len(result.submitted_tasks) == 1
         assert result.submitted_tasks[0].expert_id == 10
+
+    finally:
+        pipeline.stop()
+
+def test_pipeline_result_contains_detached_admission_stats_snapshot():
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=10,
+                score=0.9,
+                priority=0.9,
+            )
+        ]
+    )
+
+    engine = PrefetchEngine(
+        lambda _task: None,
+        num_workers=1,
+    )
+
+    admission = AdmissionController(
+        min_priority=0.0,
+        min_confidence=0.8,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        # First process:
+        # expert 10 is accepted.
+        result1 = pipeline.process([1])
+
+        assert result1.admission_stats is not pipeline.admission_stats
+
+        assert result1.admission_stats.total == 1
+        assert result1.admission_stats.accepted == 1
+        assert result1.admission_stats.rejected == 0
+
+        # Change the scheduled expert so the second process
+        # does not trigger duplicate admission rejection.
+        scheduler.requests = [
+            PrefetchRequest(
+                expert_id=11,
+                score=0.9,
+                priority=0.9,
+            )
+        ]
+
+        # Second process:
+        # pipeline-level stats are cumulative.
+        result2 = pipeline.process([1])
+
+        assert pipeline.admission_stats.total == 2
+        assert pipeline.admission_stats.accepted == 2
+        assert pipeline.admission_stats.rejected == 0
+
+        assert result2.admission_stats.total == 2
+        assert result2.admission_stats.accepted == 2
+        assert result2.admission_stats.rejected == 0
+
+        # The first result remains a snapshot of the first process.
+        assert result1.admission_stats.total == 1
+        assert result1.admission_stats.accepted == 1
+        assert result1.admission_stats.rejected == 0
+
+        # Each PipelineResult owns its own stats snapshot.
+        assert result1.admission_stats is not result2.admission_stats
 
     finally:
         pipeline.stop()

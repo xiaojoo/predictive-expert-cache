@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List
 
 from ..scheduler import ExpertScheduler, PrefetchRequest
@@ -25,8 +25,9 @@ class PipelineResult:
 
     current_experts: List[int]
     scheduled_requests: List[PrefetchRequest]
-    admission_decisions: List[AdmissionDecision]
     submitted_tasks: List[PrefetchTask]
+    admission_decisions: List[AdmissionDecision]
+    admission_stats: AdmissionStats
 
 
 class PrefetchPipeline:
@@ -138,10 +139,11 @@ class PrefetchPipeline:
                 submitted_tasks.append(task)
 
         return PipelineResult(
-            current_experts=list(current_experts),
+            current_experts=current_experts,
             scheduled_requests=scheduled_requests,
-            admission_decisions=admission_decisions,
             submitted_tasks=submitted_tasks,
+            admission_decisions=admission_decisions,
+            admission_stats=replace(self.admission_stats),
         )
 
     # ---------------------------------------------------------

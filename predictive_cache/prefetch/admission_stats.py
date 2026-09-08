@@ -55,3 +55,17 @@ class AdmissionStats:
         if self.total == 0:
             return 0.0
         return self.rejected / self.total
+
+    def metrics(self) -> dict[str, int | float]:
+        return {
+            "admission_total": self.total,
+            "admission_accepted": self.accepted,
+            "admission_rejected": self.rejected,
+            "admission_reject_low_priority": self.reject_low_priority,
+            "admission_reject_low_confidence": self.reject_low_confidence,
+            "admission_reject_duplicate_queued": self.reject_duplicate_queued,
+            "admission_reject_duplicate_running": self.reject_duplicate_running,
+            "admission_reject_queue_full": self.reject_queue_full,
+            "admission_acceptance_rate": self.acceptance_rate,
+            "admission_rejection_rate": self.rejection_rate,
+        }
