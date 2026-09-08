@@ -10,6 +10,13 @@ from .transition_probability import (
     ExpertTransitionProbability,
     build_transition_probabilities,
 )
+from .features import (
+    ExpertPredictionFeatures,
+    ExpertCandidateFeatures,
+    build_expert_features,
+    build_candidate_features,
+    get_transition_probability,
+)
 from .collector import RoutingEventCollector
 from .history import RoutingHistory
 from .models import RoutingEvent
@@ -25,4 +32,9 @@ __all__ = [
     "build_expert_transitions",
     "ExpertTransitionProbability",
     "build_transition_probabilities",
+    "ExpertPredictionFeatures",
+    "ExpertCandidateFeatures",
+    "build_expert_features",
+    "build_candidate_features",
+    "get_transition_probability",
 ]
