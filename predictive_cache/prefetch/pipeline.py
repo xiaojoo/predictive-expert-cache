@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List
 
 from ..scheduler import ExpertScheduler, PrefetchRequest
+from .admission import AdmissionController
 from .engine import PrefetchEngine
 from .types import (
     PrefetchSource,
@@ -50,19 +51,22 @@ class PrefetchPipeline:
     """
 
     def __init__(
-        self,
-        scheduler: ExpertScheduler,
-        engine: PrefetchEngine,
-        *,
-        source: PrefetchSource = PrefetchSource.NVME,
-        target: PrefetchTarget = PrefetchTarget.RAM,
-        auto_start: bool = True,
+            self,
+            scheduler: ExpertScheduler,
+            engine: PrefetchEngine,
+            *,
+            source: PrefetchSource = PrefetchSource.NVME,
+            target: PrefetchTarget = PrefetchTarget.RAM,
+            admission: AdmissionController | None = None,
+            auto_start: bool = True,
     ) -> None:
         self.scheduler = scheduler
         self.engine = engine
 
         self.source = source
         self.target = target
+
+        self.admission = admission or AdmissionController()
 
         if auto_start:
             self.start()
@@ -90,8 +94,8 @@ class PrefetchPipeline:
     # ---------------------------------------------------------
 
     def process(
-        self,
-        current_experts: list[int],
+            self,
+            current_experts: list[int],
     ) -> PipelineResult:
 
         requests = self.scheduler.plan_prefetch(
@@ -105,10 +109,15 @@ class PrefetchPipeline:
         submitted_tasks: list[PrefetchTask] = []
 
         for request in scheduled_requests:
-
             task = self._request_to_task(
                 request
             )
+
+            if not self.admission.admit(
+                    task,
+                    self.engine,
+            ):
+                continue
 
             if self.engine.submit(task):
                 submitted_tasks.append(task)
