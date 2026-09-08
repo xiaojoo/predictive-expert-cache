@@ -17,10 +17,19 @@ from .features import (
     build_candidate_features,
     get_transition_probability,
 )
+from .normalization import (
+    NormalizedExpertFeatures,
+    normalize_features,
+)
+from .scoring import (
+    PredictionScore,
+    calculate_prediction_score,
+    recency_score,
+)
 from .collector import RoutingEventCollector
 from .history import RoutingHistory
 from .models import RoutingEvent
-
+from .top_k import select_top_k_predictions
 
 __all__ = [
     "RoutingEvent",
@@ -37,4 +46,10 @@ __all__ = [
     "build_expert_features",
     "build_candidate_features",
     "get_transition_probability",
+    "NormalizedExpertFeatures",
+    "normalize_features",
+    "PredictionScore",
+    "calculate_prediction_score",
+    "recency_score",
+    "select_top_k_predictions",
 ]
