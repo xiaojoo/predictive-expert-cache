@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from predictive_cache.prefetch import (
     PrefetchEngine,
     PrefetchPipeline,
     PrefetchSource,
+    PrefetchStatus,
     PrefetchTarget,
 )
 from predictive_cache.prefetch.admission import AdmissionController
@@ -446,4 +448,197 @@ def test_pipeline_admission_preserves_queue_boundary_after_rejection() -> None:
 
     finally:
         release.set()
+        pipeline.stop()
+
+def test_pipeline_admission_accepted_task_is_completed_by_worker() -> None:
+    loaded: list[int] = []
+    loaded_event = threading.Event()
+
+    def loader(task):
+        loaded.append(task.expert_id)
+        loaded_event.set()
+
+    scheduler = FakeScheduler(
+        [
+            Request(
+                51,
+                priority=1.0,
+                score=0.95,
+            ),
+        ]
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+    admission = AdmissionController(
+        min_confidence=0.90,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        result = pipeline.process([100])
+
+        assert len(result.scheduled_requests) == 1
+        assert len(result.submitted_tasks) == 1
+        assert result.submitted_tasks[0].expert_id == 51
+
+        assert loaded_event.wait(timeout=2.0)
+    finally:
+        pipeline.stop()
+
+    assert loaded == [51]
+
+    results = pipeline.results()
+    assert len(results) == 1
+    assert results[0].expert_id == 51
+    assert results[0].status == PrefetchStatus.COMPLETED
+
+def test_pipeline_admission_accepted_task_failure_reaches_failed_result() -> None:
+    failed_event = threading.Event()
+
+    def loader(task):
+        failed_event.set()
+        raise RuntimeError(f"load failed: {task.expert_id}")
+
+    scheduler = FakeScheduler(
+        [
+            Request(
+                52,
+                priority=1.0,
+                score=0.95,
+            ),
+        ]
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+    admission = AdmissionController(
+        min_confidence=0.90,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        result = pipeline.process([100])
+
+        assert len(result.submitted_tasks) == 1
+        assert result.submitted_tasks[0].expert_id == 52
+
+        assert failed_event.wait(timeout=1.0)
+
+        results = pipeline.results()
+        assert len(results) == 1
+        assert results[0].expert_id == 52
+        assert results[0].status == PrefetchStatus.FAILED
+        assert results[0].error == "load failed: 52"
+    finally:
+        pipeline.stop()
+
+def test_pipeline_propagates_admission_decisions_to_stats() -> None:
+    loaded = []
+    loaded_event = threading.Event()
+
+    def loader(task):
+        loaded.append(task.expert_id)
+        loaded_event.set()
+
+    scheduler = FakeScheduler(
+        [
+            Request(61, priority=1.0, score=0.95),
+            Request(62, priority=1.0, score=0.40),
+        ]
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+    admission = AdmissionController(
+        min_confidence=0.90,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        result = pipeline.process([100])
+
+        assert len(result.scheduled_requests) == 2
+        assert [task.expert_id for task in result.submitted_tasks] == [61]
+
+        assert loaded_event.wait(timeout=1.0)
+        assert loaded == [61]
+
+        stats = result.admission_stats
+        assert stats.total == 2
+        assert stats.accepted == 1
+        assert stats.rejected == 1
+        assert stats.reject_low_confidence == 1
+    finally:
+        pipeline.stop()
+
+def test_pipeline_admission_rejection_does_not_produce_prefetch_result() -> None:
+    loaded = []
+
+    def loader(task):
+        loaded.append(task.expert_id)
+
+    scheduler = FakeScheduler(
+        [
+            Request(71, priority=1.0, score=0.95),
+            Request(72, priority=1.0, score=0.40),
+        ]
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+    admission = AdmissionController(
+        min_confidence=0.90,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        admission=admission,
+    )
+
+    try:
+        result = pipeline.process([100])
+
+        assert [task.expert_id for task in result.submitted_tasks] == [71]
+
+        # 等待队列排空并确认 accepted task 完成
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if len(pipeline.results()) == 1:
+                break
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == 1
+        assert results[0].expert_id == 71
+        assert results[0].status == PrefetchStatus.COMPLETED
+
+        assert loaded == [71]
+        assert 72 not in loaded
+    finally:
         pipeline.stop()
