@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from .executor import PrefetchExecutor
 from .queue import PrefetchQueue
@@ -59,3 +59,4 @@ class PrefetchWorker:
     def clear_results(self) -> None:
         """Clear previously recorded worker results."""
         self._results.clear()
+

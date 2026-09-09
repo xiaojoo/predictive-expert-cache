@@ -28,3 +28,4 @@ __all__ = [
     "PrefetchTarget",
     "PrefetchTask",
 ]
+from .types import PrefetchTask

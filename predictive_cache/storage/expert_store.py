@@ -1,6 +1,8 @@
 ﻿from abc import ABC, abstractmethod
 from enum import Enum
 
+from predictive_cache.types import ExpertId
+
 
 class ExpertLocation(str, Enum):
     """Physical/logical location of an expert."""
@@ -15,22 +17,22 @@ class ExpertStore(ABC):
     """Abstract storage interface for expert lifecycle operations."""
 
     @abstractmethod
-    def load(self, expert_id: str) -> None:
+    def load(self, expert_id: ExpertId) -> None:
         """Load an expert into the active execution location."""
         raise NotImplementedError
 
     @abstractmethod
-    def unload(self, expert_id: str) -> None:
+    def unload(self, expert_id: ExpertId) -> None:
         """Unload an expert from the active execution location."""
         raise NotImplementedError
 
     @abstractmethod
-    def prefetch(self, expert_id: str) -> None:
+    def prefetch(self, expert_id: ExpertId) -> None:
         """Prepare an expert for a future load."""
         raise NotImplementedError
 
     @abstractmethod
-    def location(self, expert_id: str) -> ExpertLocation | None:
+    def location(self, expert_id: ExpertId) -> ExpertLocation | None:
         """Return the current storage location of an expert."""
         raise NotImplementedError
 
@@ -40,16 +42,16 @@ class ExpertStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, expert_id: str) -> "ExpertRecord | None":
+    def get(self, expert_id: ExpertId) -> "ExpertRecord | None":
         """Return an expert record, or None when absent."""
         raise NotImplementedError
 
     @abstractmethod
-    def contains(self, expert_id: str) -> bool:
+    def contains(self, expert_id: ExpertId) -> bool:
         """Return whether an expert record exists."""
         raise NotImplementedError
 
     @abstractmethod
-    def remove(self, expert_id: str) -> None:
+    def remove(self, expert_id: ExpertId) -> None:
         """Remove an expert record if present."""
         raise NotImplementedError

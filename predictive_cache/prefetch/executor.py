@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
@@ -64,3 +64,4 @@ class InMemoryPrefetchExecutor(PrefetchExecutor):
     def clear(self) -> None:
         self._loaded_experts.clear()
         self._executed_tasks.clear()
+

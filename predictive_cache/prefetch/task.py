@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
@@ -17,23 +17,20 @@ class TaskState(str, Enum):
 
 @dataclass(frozen=True)
 class PrefetchTask:
-    """A single expert prefetch task."""
+    """A legacy prefetch task used by the queue/executor path."""
 
     expert_id: int
     priority: float
     probability: float
-
     source: str = "prediction"
 
     def __post_init__(self) -> None:
         if self.expert_id < 0:
-            raise ValueError("expert_id must be non-negative")
-
+            raise ValueError("expert_id must be >= 0")
         if not 0.0 <= self.probability <= 1.0:
-            raise ValueError("probability must be between 0 and 1")
-
-        if self.priority < 0.0:
-            raise ValueError("priority must be non-negative")
+            raise ValueError("probability must be in [0, 1]")
+        if self.priority < 0:
+            raise ValueError("priority must be >= 0")
 
 
 @dataclass
