@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from .lru import ExpertLRU
 from .predictor import ExpertPredictor
 from .types import (
@@ -14,31 +16,50 @@ class PredictiveExpertCache:
     """
     Algorithm-level predictive expert cache.
 
-    This class does NOT store actual model weights.
+    This layer stores expert metadata only.
+    Actual model weights remain outside the cache core.
 
-    It only manages:
+    Responsibilities:
 
-        - expert access statistics
+        - routing statistics
         - prediction
         - cache residency
         - LRU eviction
+        - cache hit/miss statistics
     """
 
     def __init__(
         self,
         config: CacheConfig | None = None,
-    ):
-        self.config = config or CacheConfig()
+    ) -> None:
 
-        self.predictor = ExpertPredictor(
-            recent_window=self.config.recent_window,
-            frequency_weight=self.config.frequency_weight,
-            recency_weight=self.config.recency_weight,
-            transition_weight=self.config.transition_weight,
-            recency_decay=self.config.recency_decay,
+        self.config = (
+            config
+            or CacheConfig()
         )
 
-        self.lru = ExpertLRU[ExpertId, CacheEntry](
+        self.predictor = ExpertPredictor(
+            recent_window=(
+                self.config.recent_window
+            ),
+            frequency_weight=(
+                self.config.frequency_weight
+            ),
+            recency_weight=(
+                self.config.recency_weight
+            ),
+            transition_weight=(
+                self.config.transition_weight
+            ),
+            recency_decay=(
+                self.config.recency_decay
+            ),
+        )
+
+        self.lru = ExpertLRU[
+            ExpertId,
+            CacheEntry,
+        ](
             self.config.capacity
         )
 
@@ -50,26 +71,26 @@ class PredictiveExpertCache:
 
     def observe(
         self,
-        experts: list[ExpertId],
+        experts: Iterable[ExpertId],
     ) -> None:
+        """
+        Record a router event.
 
-        self.predictor.observe(experts)
+        Important:
+        observing a routed expert does NOT mean the expert
+        was present in this cache.
+        """
 
-        self._step = self.predictor.step
+        self.predictor.observe(
+            experts
+        )
 
-        for expert_id in experts:
-            entry = self.lru.peek(expert_id)
-
-            if entry is not None:
-                entry.last_access_step = self._step
-                entry.access_count += 1
-                entry.hit_count += 1
-
-                # Touch LRU ordering.
-                self.lru.get(expert_id)
+        self._step = (
+            self.predictor.step
+        )
 
     # ---------------------------------------------------------
-    # Cache expert
+    # Insert
     # ---------------------------------------------------------
 
     def insert(
@@ -79,13 +100,28 @@ class PredictiveExpertCache:
         location: str = "memory",
     ) -> ExpertId | None:
 
-        existing = self.lru.peek(expert_id)
+        if size_bytes < 0:
+            raise ValueError(
+                "size_bytes must be >= 0"
+            )
+
+        if not location:
+            raise ValueError(
+                "location must not be empty"
+            )
+
+        existing = self.lru.peek(
+            expert_id
+        )
 
         if existing is not None:
-            existing.last_access_step = self._step
-            existing.access_count += 1
+            existing.last_access_step = (
+                self._step
+            )
 
-            self.lru.get(expert_id)
+            self.lru.get(
+                expert_id
+            )
 
             return None
 
@@ -93,17 +129,14 @@ class PredictiveExpertCache:
             expert_id=expert_id,
             inserted_step=self._step,
             last_access_step=self._step,
-            access_count=1,
             size_bytes=size_bytes,
             location=location,
         )
 
-        evicted = self.lru.put(
+        return self.lru.put(
             expert_id,
             entry,
         )
-
-        return evicted
 
     # ---------------------------------------------------------
     # Lookup
@@ -114,21 +147,27 @@ class PredictiveExpertCache:
         expert_id: ExpertId,
     ) -> CacheEntry | None:
 
-        entry = self.lru.get(expert_id)
+        entry = self.lru.get(
+            expert_id
+        )
 
         if entry is None:
-            stats = self.predictor.stats.get(
+            self.predictor.record_miss(
                 expert_id
             )
 
-            if stats is not None:
-                stats.miss_count += 1
-
             return None
 
-        entry.last_access_step = self._step
+        entry.last_access_step = (
+            self._step
+        )
+
         entry.access_count += 1
         entry.hit_count += 1
+
+        self.predictor.record_hit(
+            expert_id
+        )
 
         return entry
 
@@ -138,16 +177,23 @@ class PredictiveExpertCache:
 
     def predict(
         self,
-        current_experts: list[ExpertId],
+        current_experts: Iterable[ExpertId],
         top_k: int | None = None,
     ) -> list[ExpertPrediction]:
 
         if top_k is None:
-            top_k = self.config.prediction_top_k
+            top_k = (
+                self.config.prediction_top_k
+            )
 
-        predictions = self.predictor.predict(
-            current_experts=current_experts,
-            top_k=top_k,
+        if top_k <= 0:
+            return []
+
+        predictions = (
+            self.predictor.predict(
+                current_experts,
+                top_k=top_k,
+            )
         )
 
         return [
@@ -163,16 +209,14 @@ class PredictiveExpertCache:
 
     def prefetch_candidates(
         self,
-        current_experts: list[ExpertId],
+        current_experts: Iterable[ExpertId],
     ) -> list[ExpertPrediction]:
-
-        predictions = self.predict(
-            current_experts
-        )
 
         return [
             prediction
-            for prediction in predictions
+            for prediction in self.predict(
+                current_experts
+            )
             if prediction.expert_id
             not in self.lru
         ]
@@ -185,7 +229,6 @@ class PredictiveExpertCache:
         self,
         expert_id: ExpertId,
     ) -> bool:
-
         return expert_id in self.lru
 
     @property
@@ -196,7 +239,9 @@ class PredictiveExpertCache:
     def capacity(self) -> int:
         return self.lru.capacity
 
-    def cached_experts(self) -> list[ExpertId]:
+    def cached_experts(
+        self,
+    ) -> list[ExpertId]:
         return self.lru.keys()
 
     def clear(self) -> None:

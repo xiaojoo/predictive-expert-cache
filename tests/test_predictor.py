@@ -149,3 +149,35 @@ def test_recent_window():
     predictor.observe([4])
 
     assert predictor.recent == [2, 3, 4]
+
+def test_prediction_tie_break_is_deterministic():
+    predictor = ExpertPredictor(
+        frequency_weight=1.0,
+        recency_weight=0.0,
+        transition_weight=0.0,
+    )
+
+    predictor.observe([1])
+    predictor.observe([2, 3])
+
+    predictions = predictor.predict(
+        [1],
+        top_k=2,
+    )
+
+    assert [
+        prediction.expert_id
+        for prediction in predictions
+    ] == [2, 3]
+
+
+def test_duplicate_experts_in_one_router_event_are_counted_once():
+    predictor = ExpertPredictor()
+
+    predictor.observe(
+        [1, 1, 2, 2]
+    )
+
+    assert predictor.stats[1].frequency == 1
+    assert predictor.stats[2].frequency == 1
+    assert predictor.recent == [1, 2]

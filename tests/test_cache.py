@@ -79,3 +79,52 @@ def test_prefetch_candidates():
     )
 
     assert predictions
+
+def test_observe_does_not_create_cache_hits():
+    cache = PredictiveExpertCache(
+        CacheConfig(capacity=2)
+    )
+
+    cache.insert(1)
+
+    cache.observe([1])
+
+    entry = cache.lru.peek(1)
+
+    assert entry is not None
+    assert entry.hit_count == 0
+
+    assert cache.predictor.stats[1].frequency == 1
+    assert cache.predictor.stats[1].hit_count == 0
+
+
+def test_cache_lookup_updates_predictor_hit_and_miss_stats():
+    cache = PredictiveExpertCache(
+        CacheConfig(capacity=2)
+    )
+
+    cache.insert(1)
+
+    assert cache.get(1) is not None
+    assert cache.get(999) is None
+
+    assert cache.predictor.stats[1].hit_count == 1
+    assert cache.predictor.stats[999].miss_count == 1
+
+
+def test_insert_rejects_negative_size():
+    cache = PredictiveExpertCache()
+
+    try:
+        cache.insert(
+            1,
+            size_bytes=-1,
+        )
+    except ValueError as exc:
+        assert str(exc) == (
+            "size_bytes must be >= 0"
+        )
+    else:
+        raise AssertionError(
+            "negative size_bytes must be rejected"
+        )

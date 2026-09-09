@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict, deque
+from collections.abc import Iterable
 
 from .types import (
     ExpertId,
@@ -12,7 +13,7 @@ from .types import (
 
 class ExpertPredictor:
     """
-    Predict future experts based on:
+    Predict future experts from:
 
     1. Frequency
     2. Recency
@@ -27,21 +28,59 @@ class ExpertPredictor:
         recency_weight: float = 0.20,
         transition_weight: float = 0.50,
         recency_decay: float = 8.0,
-    ):
+    ) -> None:
         if recent_window <= 0:
-            raise ValueError("recent_window must be > 0")
+            raise ValueError(
+                "recent_window must be > 0"
+            )
+
+        if recency_decay <= 0:
+            raise ValueError(
+                "recency_decay must be > 0"
+            )
+
+        weights = (
+            frequency_weight,
+            recency_weight,
+            transition_weight,
+        )
+
+        if any(weight < 0 for weight in weights):
+            raise ValueError(
+                "prediction weights must be >= 0"
+            )
+
+        weight_sum = sum(weights)
+
+        if weight_sum <= 0:
+            raise ValueError(
+                "prediction weights must have positive sum"
+            )
 
         self.recent_window = recent_window
 
-        self.frequency_weight = frequency_weight
-        self.recency_weight = recency_weight
-        self.transition_weight = transition_weight
+        # Normalize weights so callers can provide
+        # arbitrary non-negative weights.
+        self.frequency_weight = (
+            frequency_weight / weight_sum
+        )
+
+        self.recency_weight = (
+            recency_weight / weight_sum
+        )
+
+        self.transition_weight = (
+            transition_weight / weight_sum
+        )
 
         self.recency_decay = recency_decay
 
         self._step = 0
 
-        self._stats: dict[ExpertId, ExpertStats] = {}
+        self._stats: dict[
+            ExpertId,
+            ExpertStats,
+        ] = {}
 
         self._transitions: dict[
             ExpertId,
@@ -52,29 +91,38 @@ class ExpertPredictor:
             maxlen=recent_window
         )
 
-        self._previous_experts: list[ExpertId] = []
+        self._previous_experts: list[
+            ExpertId
+        ] = []
 
     # ---------------------------------------------------------
     # Observe
     # ---------------------------------------------------------
 
-    def observe(self, experts: list[ExpertId]) -> None:
+    def observe(
+        self,
+        experts: Iterable[ExpertId],
+    ) -> None:
         """
-        Observe experts selected during one routing event.
+        Observe one router event.
 
-        Example:
-
-            observe([12, 41, 7, 99])
+        Duplicate expert IDs inside the same routing event
+        are collapsed while preserving order.
         """
 
-        if not experts:
+        current = list(
+            dict.fromkeys(experts)
+        )
+
+        if not current:
             return
 
         current_step = self._step
 
-        # Update expert statistics.
-        for expert_id in experts:
-            stats = self._stats.get(expert_id)
+        for expert_id in current:
+            stats = self._stats.get(
+                expert_id
+            )
 
             if stats is None:
                 stats = ExpertStats(
@@ -87,24 +135,78 @@ class ExpertPredictor:
             stats.frequency += 1
             stats.last_seen_step = current_step
 
-            self._recent.append(expert_id)
+            self._recent.append(
+                expert_id
+            )
 
         # -----------------------------------------------------
         # Build transitions
         # -----------------------------------------------------
 
         if self._previous_experts:
-            previous = self._previous_experts
-            current = experts
-
-            for prev_expert in previous:
+            for prev_expert in self._previous_experts:
                 for current_expert in current:
-                    if prev_expert != current_expert:
-                        self._transitions[prev_expert][current_expert] += 1
+                    if (
+                        prev_expert
+                        != current_expert
+                    ):
+                        self._transitions[
+                            prev_expert
+                        ][current_expert] += 1
 
-        self._previous_experts = list(experts)
+        self._previous_experts = current
 
         self._step += 1
+
+    # ---------------------------------------------------------
+    # Cache statistics
+    # ---------------------------------------------------------
+
+    def record_hit(
+        self,
+        expert_id: ExpertId,
+    ) -> None:
+        """
+        Record a successful cache lookup.
+
+        This does not affect routing frequency.
+        """
+
+        stats = self._stats.get(
+            expert_id
+        )
+
+        if stats is None:
+            stats = ExpertStats(
+                expert_id=expert_id
+            )
+
+            self._stats[expert_id] = stats
+
+        stats.hit_count += 1
+
+    def record_miss(
+        self,
+        expert_id: ExpertId,
+    ) -> None:
+        """
+        Record a failed cache lookup.
+
+        This does not affect routing frequency.
+        """
+
+        stats = self._stats.get(
+            expert_id
+        )
+
+        if stats is None:
+            stats = ExpertStats(
+                expert_id=expert_id
+            )
+
+            self._stats[expert_id] = stats
+
+        stats.miss_count += 1
 
     # ---------------------------------------------------------
     # Transition probability
@@ -123,15 +225,20 @@ class ExpertPredictor:
         if not transitions:
             return 0.0
 
-        total = sum(transitions.values())
+        total = sum(
+            transitions.values()
+        )
 
         if total == 0:
             return 0.0
 
-        return transitions[next_expert] / total
+        return (
+            transitions[next_expert]
+            / total
+        )
 
     # ---------------------------------------------------------
-    # Frequency
+    # Frequency score
     # ---------------------------------------------------------
 
     def _frequency_score(
@@ -150,15 +257,20 @@ class ExpertPredictor:
         if max_frequency == 0:
             return 0.0
 
-        stats = self._stats.get(expert_id)
+        stats = self._stats.get(
+            expert_id
+        )
 
         if stats is None:
             return 0.0
 
-        return stats.frequency / max_frequency
+        return (
+            stats.frequency
+            / max_frequency
+        )
 
     # ---------------------------------------------------------
-    # Recency
+    # Recency score
     # ---------------------------------------------------------
 
     def _recency_score(
@@ -166,22 +278,27 @@ class ExpertPredictor:
         expert_id: ExpertId,
     ) -> float:
 
-        stats = self._stats.get(expert_id)
+        stats = self._stats.get(
+            expert_id
+        )
 
-        if stats is None:
+        if (
+            stats is None
+            or stats.last_seen_step < 0
+        ):
             return 0.0
 
-        if stats.last_seen_step < 0:
-            return 0.0
-
-        age = self._step - stats.last_seen_step
+        age = (
+            self._step
+            - stats.last_seen_step
+        )
 
         return math.exp(
             -age / self.recency_decay
         )
 
     # ---------------------------------------------------------
-    # Transition
+    # Transition score
     # ---------------------------------------------------------
 
     def _transition_score(
@@ -193,15 +310,16 @@ class ExpertPredictor:
         if not current_experts:
             return 0.0
 
-        probabilities = [
-            self.transition_probability(
-                current,
-                candidate,
-            )
-            for current in current_experts
-        ]
-
-        return max(probabilities, default=0.0)
+        return max(
+            (
+                self.transition_probability(
+                    current,
+                    candidate,
+                )
+                for current in current_experts
+            ),
+            default=0.0,
+        )
 
     # ---------------------------------------------------------
     # Predict
@@ -209,24 +327,34 @@ class ExpertPredictor:
 
     def predict(
         self,
-        current_experts: list[ExpertId],
+        current_experts: Iterable[ExpertId],
         top_k: int = 4,
     ) -> list[ExpertPrediction]:
 
         if top_k <= 0:
             return []
 
-        candidate_ids = set(self._stats.keys())
-
-        # Current experts don't need to be prefetched.
-        candidate_ids.difference_update(
-            current_experts
+        current = list(
+            dict.fromkeys(
+                current_experts
+            )
         )
 
-        predictions: list[ExpertPrediction] = []
+        candidate_ids = set(
+            self._stats
+        )
+
+        # Current experts don't need
+        # to be prefetched.
+        candidate_ids.difference_update(
+            current
+        )
+
+        predictions: list[
+            ExpertPrediction
+        ] = []
 
         for expert_id in candidate_ids:
-
             frequency_score = (
                 self._frequency_score(
                     expert_id
@@ -241,7 +369,7 @@ class ExpertPredictor:
 
             transition_score = (
                 self._transition_score(
-                    current_experts,
+                    current,
                     expert_id,
                 )
             )
@@ -249,11 +377,9 @@ class ExpertPredictor:
             score = (
                 self.frequency_weight
                 * frequency_score
-                +
-                self.recency_weight
+                + self.recency_weight
                 * recency_score
-                +
-                self.transition_weight
+                + self.transition_weight
                 * transition_score
             )
 
@@ -267,9 +393,13 @@ class ExpertPredictor:
                 )
             )
 
+        # Deterministic ordering is important
+        # for stable prefetch decisions.
         predictions.sort(
-            key=lambda x: x.score,
-            reverse=True,
+            key=lambda prediction: (
+                -prediction.score,
+                prediction.expert_id,
+            )
         )
 
         return predictions[:top_k]
@@ -283,16 +413,22 @@ class ExpertPredictor:
         return self._step
 
     @property
-    def stats(self) -> dict[ExpertId, ExpertStats]:
+    def stats(
+        self,
+    ) -> dict[ExpertId, ExpertStats]:
         return self._stats
 
     @property
     def transitions(
         self,
-    ) -> dict[ExpertId, Counter[ExpertId]]:
-
+    ) -> dict[
+        ExpertId,
+        Counter[ExpertId],
+    ]:
         return self._transitions
 
     @property
-    def recent(self) -> list[ExpertId]:
+    def recent(
+        self,
+    ) -> list[ExpertId]:
         return list(self._recent)
