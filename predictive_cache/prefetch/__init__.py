@@ -18,6 +18,8 @@ from .transfer import (
     PrefetchTransferHandler,
 )
 from .storage import (
+    ExpertStorePrefetchRam,
+    ExpertStorePrefetchStorage,
     NvmeToRamHandler,
     PrefetchRam,
     PrefetchStorage,
@@ -43,4 +45,6 @@ __all__ = [
     "PrefetchRam",
     "PrefetchStorage",
     "InMemoryPrefetchRam",
+    "ExpertStorePrefetchRam",
+    "ExpertStorePrefetchStorage",
 ]
