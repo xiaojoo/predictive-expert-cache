@@ -948,3 +948,298 @@ def test_real_qwen_routing_duplicate_admission_after_completion():
 
     finally:
         pipeline.stop()
+
+def test_real_qwen_routing_admission_engine_state_consistency():
+    config = Qwen3MoeConfig(
+        num_hidden_layers=2,
+        hidden_size=128,
+        intermediate_size=256,
+        num_local_experts=8,
+        num_experts_per_tok=2,
+        vocab_size=128,
+    )
+
+    model = Qwen3MoeForCausalLM(config)
+    model.eval()
+
+    cache = PredictiveExpertCache()
+    bridge = QwenRoutingBridge(cache)
+    capture = QwenMoeRoutingCapture(bridge)
+
+    input_ids = torch.tensor(
+        [
+            [10, 11, 12],
+            [20, 21, 22],
+        ],
+        dtype=torch.long,
+    )
+
+    with torch.no_grad():
+        output = capture.capture_forward(
+            model,
+            input_ids=input_ids,
+            step=0,
+        )
+
+    assert output.logits.shape[:2] == (2, 3)
+
+    events = bridge.collector.events()
+
+    assert len(events) == 12
+    assert cache.predictor.step == 6
+
+    current_experts = sorted(
+        {
+            expert_id
+            for event in events
+            if event.step == 5
+            for expert_id in event.expert_ids
+        }
+    )
+
+    assert current_experts
+
+    scheduler = ExpertScheduler(cache)
+
+    loaded = []
+
+    def loader(task):
+        loaded.append(task.expert_id)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        # ---------------------------------------------------------
+        # Initial state
+        # ---------------------------------------------------------
+
+        assert pipeline.running
+        assert engine.queued_tasks == []
+        assert engine.running_tasks == []
+        assert pipeline.results() == []
+
+        # ---------------------------------------------------------
+        # First admission
+        # ---------------------------------------------------------
+
+        first_result = pipeline.process(current_experts)
+
+        assert first_result.scheduled_requests
+        assert first_result.admission_decisions
+        assert first_result.submitted_tasks
+
+        first_ids = {
+            task.expert_id
+            for task in first_result.submitted_tasks
+        }
+
+        assert first_ids
+
+        assert {
+            decision.reason
+            for decision in first_result.admission_decisions
+            if decision.admitted
+        } == {AdmissionReason.ACCEPT}
+
+        assert first_result.admission_stats.accepted == len(
+            [
+                decision
+                for decision in first_result.admission_decisions
+                if decision.admitted
+            ]
+        )
+
+        assert first_result.admission_stats.rejected == len(
+            [
+                decision
+                for decision in first_result.admission_decisions
+                if not decision.admitted
+            ]
+        )
+
+        # At least one task must be visible to the engine
+        # immediately as queued or running.
+        assert (
+            engine.queued_tasks
+            or engine.running_tasks
+        )
+
+        assert set(engine.queued_tasks) <= first_ids
+        assert set(engine.running_tasks) <= first_ids
+
+        # ---------------------------------------------------------
+        # Immediate duplicate
+        # ---------------------------------------------------------
+
+        duplicate_result = pipeline.process(current_experts)
+
+        duplicate_decisions = [
+            decision
+            for decision in duplicate_result.admission_decisions
+            if decision.reason
+            in {
+                AdmissionReason.REJECT_DUPLICATE_QUEUED,
+                AdmissionReason.REJECT_DUPLICATE_RUNNING,
+            }
+        ]
+
+        assert duplicate_decisions
+
+        assert all(
+            not decision.admitted
+            for decision in duplicate_decisions
+        )
+
+        assert duplicate_result.submitted_tasks == []
+
+        # The first batch remains the only active batch.
+        assert set(engine.queued_tasks).issubset(first_ids)
+        assert set(engine.running_tasks).issubset(first_ids)
+
+        # ---------------------------------------------------------
+        # Wait for complete execution
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                first_result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            first_result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == first_ids
+
+        assert set(loaded) == first_ids
+
+        # ---------------------------------------------------------
+        # Critical lifecycle invariant:
+        #
+        # completed tasks must no longer be considered queued
+        # or running by the admission engine.
+        # ---------------------------------------------------------
+
+        assert engine.queued_tasks == []
+        assert engine.running_tasks == []
+
+        # Results are retained independently from active state.
+        assert len(pipeline.results()) == len(first_ids)
+
+        # ---------------------------------------------------------
+        # Clear historical results.
+        #
+        # This must not be required for admission eligibility;
+        # it only removes completed result history.
+        # ---------------------------------------------------------
+
+        pipeline.clear_results()
+
+        assert pipeline.results() == []
+
+        assert engine.queued_tasks == []
+        assert engine.running_tasks == []
+
+        # ---------------------------------------------------------
+        # Same prediction after completion must be admissible again.
+        # ---------------------------------------------------------
+
+        second_result = pipeline.process(current_experts)
+
+        assert second_result.scheduled_requests
+        assert second_result.admission_decisions
+        assert second_result.submitted_tasks
+
+        second_ids = {
+            task.expert_id
+            for task in second_result.submitted_tasks
+        }
+
+        assert second_ids == first_ids
+
+        assert all(
+            decision.admitted
+            for decision in second_result.admission_decisions
+            if decision.reason == AdmissionReason.ACCEPT
+        )
+
+        assert set(engine.queued_tasks).issubset(second_ids)
+        assert set(engine.running_tasks).issubset(second_ids)
+
+        # ---------------------------------------------------------
+        # Wait for second execution
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                second_result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            second_result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == second_ids
+
+        # ---------------------------------------------------------
+        # Final lifecycle invariant
+        # ---------------------------------------------------------
+
+        assert engine.queued_tasks == []
+        assert engine.running_tasks == []
+
+        assert len(loaded) == (
+            len(first_ids)
+            + len(second_ids)
+        )
+
+        assert loaded.count(next(iter(first_ids))) == 2
+
+    finally:
+        pipeline.stop()
+
+        assert not pipeline.running
