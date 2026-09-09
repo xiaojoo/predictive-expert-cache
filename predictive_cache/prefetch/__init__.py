@@ -13,7 +13,10 @@ from .types import (
     PrefetchTarget,
     PrefetchTask,
 )
-from .transfer import PrefetchTransferExecutor
+from .transfer import (
+    PrefetchTransferExecutor,
+    PrefetchTransferHandler,
+)
 
 __all__ = [
     "AdmissionController",
@@ -29,4 +32,5 @@ __all__ = [
     "PrefetchTarget",
     "PrefetchTask",
     "PrefetchTransferExecutor",
+    "PrefetchTransferHandler",
 ]

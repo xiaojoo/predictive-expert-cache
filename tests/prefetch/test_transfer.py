@@ -88,3 +88,30 @@ def test_transfer_routes_nvme_to_gpu():
     transfer.execute(task)
 
     assert calls == [3]
+
+def test_transfer_accepts_callable_handler():
+    calls: list[int] = []
+
+    class NvmeToRamHandler:
+        def __call__(self, task: PrefetchTask) -> None:
+            calls.append(task.expert_id)
+
+    transfer = PrefetchTransferExecutor(
+        lambda task: None,
+    )
+
+    transfer.register(
+        PrefetchSource.NVME,
+        PrefetchTarget.RAM,
+        NvmeToRamHandler(),
+    )
+
+    task = PrefetchTask(
+        expert_id=10,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    transfer.execute(task)
+
+    assert calls == [10]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Protocol
 
 from .types import (
     PrefetchSource,
@@ -9,7 +9,12 @@ from .types import (
 )
 
 
-TransferHandler = Callable[[PrefetchTask], None]
+class PrefetchTransferHandler(Protocol):
+    """Interface for one concrete prefetch transfer operation."""
+
+    def __call__(self, task: PrefetchTask) -> None:
+        """Execute one transfer operation."""
+        ...
 
 
 class PrefetchTransferExecutor:
@@ -23,20 +28,20 @@ class PrefetchTransferExecutor:
     """
 
     def __init__(
-        self,
-        default_handler: TransferHandler,
+            self,
+            default_handler: PrefetchTransferHandler,
     ) -> None:
         self._default_handler = default_handler
         self._handlers: dict[
             tuple[PrefetchSource, PrefetchTarget],
-            TransferHandler,
+            PrefetchTransferHandler,
         ] = {}
 
     def register(
         self,
         source: PrefetchSource,
         target: PrefetchTarget,
-        handler: TransferHandler,
+        handler: PrefetchTransferHandler,
     ) -> None:
         """Register a handler for one source/target route."""
         self._handlers[(source, target)] = handler
