@@ -136,6 +136,14 @@ def test_real_qwen_routing_to_prefetch_pipeline():
 
     scheduler = ExpertScheduler(cache)
 
+    scheduled_requests = scheduler.plan_prefetch_predictions(current_experts)
+    scheduled_ids = {
+        request.expert_id
+        for request in scheduled_requests
+    }
+
+    assert scheduled_ids
+
     loaded = []
 
     def loader(task):
@@ -1238,6 +1246,232 @@ def test_real_qwen_routing_admission_engine_state_consistency():
         )
 
         assert loaded.count(next(iter(first_ids))) == 2
+
+    finally:
+        pipeline.stop()
+
+        assert not pipeline.running
+
+def test_real_qwen_routing_prefetch_storage_transfer():
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+    from predictive_cache.storage.expert_record import ExpertRecord
+    from predictive_cache.storage.expert_store import ExpertLocation
+    from predictive_cache.storage.in_memory import InMemoryExpertStore
+
+    config = Qwen3MoeConfig(
+        num_hidden_layers=2,
+        hidden_size=128,
+        intermediate_size=256,
+        num_local_experts=8,
+        num_experts_per_tok=2,
+        vocab_size=128,
+    )
+
+    model = Qwen3MoeForCausalLM(config)
+    model.eval()
+
+    cache = PredictiveExpertCache()
+    bridge = QwenRoutingBridge(cache)
+    capture = QwenMoeRoutingCapture(bridge)
+
+    input_ids = torch.tensor(
+        [
+            [10, 11, 12],
+            [20, 21, 22],
+        ],
+        dtype=torch.long,
+    )
+
+    with torch.no_grad():
+        output = capture.capture_forward(
+            model,
+            input_ids=input_ids,
+            step=0,
+        )
+
+    assert output.logits.shape[:2] == (2, 3)
+
+    events = bridge.collector.events()
+
+    assert len(events) == 12
+    assert cache.predictor.step == 6
+
+    current_experts = sorted(
+        {
+            expert_id
+            for event in events
+            if event.step == 5
+            for expert_id in event.expert_ids
+        }
+    )
+
+    assert current_experts
+
+    scheduler = ExpertScheduler(cache)
+
+    # ---------------------------------------------------------
+    # Determine the experts actually predicted by the scheduler.
+    # ---------------------------------------------------------
+
+    scheduled_requests = scheduler.plan_prefetch_predictions(
+        current_experts
+    )
+
+    assert scheduled_requests
+
+    scheduled_ids = {
+        request.expert_id
+        for request in scheduled_requests
+    }
+
+    assert scheduled_ids
+
+    # ---------------------------------------------------------
+    # Build source NVME store for predicted experts.
+    # ---------------------------------------------------------
+
+    source_store = InMemoryExpertStore()
+    target_store = InMemoryExpertStore()
+
+    payloads = {
+        expert_id: f"expert-payload-{expert_id}"
+        for expert_id in scheduled_ids
+    }
+
+    for expert_id, payload in payloads.items():
+        source_store.put(
+            ExpertRecord(
+                expert_id=expert_id,
+                location=ExpertLocation.NVME,
+                payload=payload,
+            )
+        )
+
+    for expert_id in scheduled_ids:
+        record = source_store.get(expert_id)
+
+        assert record is not None
+        assert record.expert_id == expert_id
+        assert record.location == ExpertLocation.NVME
+        assert record.payload == payloads[expert_id]
+
+    # ---------------------------------------------------------
+    # Real storage-backed transfer:
+    #
+    # NVME ExpertStore -> PrefetchStorage -> TransferExecutor
+    # -> RAM ExpertStore
+    # ---------------------------------------------------------
+
+    def fallback_loader(task):
+        raise AssertionError(
+            "storage-backed NVME->RAM transfer should handle "
+            "the task without fallback loader"
+        )
+
+    transfer_executor = create_storage_transfer_executor(
+        source_store,
+        target_store,
+        fallback_loader,
+    )
+
+    engine = PrefetchEngine(
+        fallback_loader,
+        num_workers=1,
+        transfer_executor=transfer_executor,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        # ---------------------------------------------------------
+        # Admission + submission
+        # ---------------------------------------------------------
+
+        result = pipeline.process(current_experts)
+
+        assert result.current_experts == current_experts
+        assert result.scheduled_requests
+        assert result.admission_decisions
+        assert result.submitted_tasks
+
+        submitted_ids = {
+            task.expert_id
+            for task in result.submitted_tasks
+        }
+
+        assert submitted_ids
+        assert submitted_ids <= scheduled_ids
+
+        assert all(
+            decision.admitted
+            for decision in result.admission_decisions
+        )
+
+        # ---------------------------------------------------------
+        # Wait for actual storage transfer completion.
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == submitted_ids
+
+        # ---------------------------------------------------------
+        # Critical 6D-1 invariant:
+        #
+        # Actual payload must travel from NVME source
+        # store into RAM target store.
+        # ---------------------------------------------------------
+
+        for expert_id in submitted_ids:
+            source_record = source_store.get(expert_id)
+            target_record = target_store.get(expert_id)
+
+            assert source_record is not None
+            assert target_record is not None
+
+            assert source_record.location == ExpertLocation.NVME
+
+            assert target_record.expert_id == expert_id
+            assert target_record.location == ExpertLocation.RAM
+            assert target_record.payload == payloads[expert_id]
+
+        assert target_store is not source_store
+
+        assert all(
+            target_store.contains(expert_id)
+            for expert_id in submitted_ids
+        )
 
     finally:
         pipeline.stop()
