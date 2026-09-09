@@ -91,3 +91,16 @@ class NvmeToRamHandler:
     def __call__(self, task: PrefetchTask) -> None:
         data = self._storage.load(task.expert_id)
         self._ram.store(task.expert_id, data)
+
+def create_nvme_to_ram_handler(
+    source: ExpertStore,
+    target: ExpertStore,
+) -> NvmeToRamHandler:
+    """
+    Build the NVMe -> RAM prefetch transfer handler
+    from the existing ExpertStore implementations.
+    """
+    return NvmeToRamHandler(
+        ExpertStorePrefetchStorage(source),
+        ExpertStorePrefetchRam(target),
+    )

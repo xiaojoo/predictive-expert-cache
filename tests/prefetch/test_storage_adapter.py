@@ -120,3 +120,40 @@ def test_nvme_to_ram_handler_composes_with_in_memory_store() -> None:
     assert record is not None
     assert record.location == ExpertLocation.RAM
     assert record.payload == "expert-7"
+
+def test_create_nvme_to_ram_handler() -> None:
+    from predictive_cache.prefetch.storage import (
+        create_nvme_to_ram_handler,
+    )
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    nvme.put(
+        ExpertRecord(
+            expert_id=9,
+            location=ExpertLocation.NVME,
+            payload="expert-9",
+        )
+    )
+
+    handler = create_nvme_to_ram_handler(
+        nvme,
+        ram,
+    )
+
+    task = PrefetchTask(
+        expert_id=9,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+        priority=1.0,
+    )
+
+    handler(task)
+
+    record = ram.get(9)
+
+    assert record is not None
+    assert record.expert_id == 9
+    assert record.location == ExpertLocation.RAM
+    assert record.payload == "expert-9"
