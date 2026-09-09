@@ -5,6 +5,7 @@ from typing import Protocol
 from predictive_cache.storage.expert_record import ExpertRecord
 from predictive_cache.storage.expert_store import ExpertLocation, ExpertStore
 
+from .stages import PrefetchStage, PrefetchStageChain
 from .transfer import PrefetchTransferExecutor, PrefetchTransferHandler
 from .types import PrefetchSource, PrefetchTarget, PrefetchTask
 
@@ -112,7 +113,6 @@ def create_ram_to_gpu_handler(
         target,
     )
 
-
 def create_storage_transfer_executor(
     source: ExpertStore,
     target: ExpertStore,
@@ -122,17 +122,43 @@ def create_storage_transfer_executor(
 ) -> PrefetchTransferExecutor:
     transfer = PrefetchTransferExecutor(default_handler)
 
+    nvme_to_ram = create_nvme_to_ram_handler(
+        source,
+        target,
+    )
+
+    if gpu is None:
+        transfer.register(
+            PrefetchSource.NVME,
+            PrefetchTarget.RAM,
+            nvme_to_ram,
+        )
+        return transfer
+
+    ram_to_gpu = create_ram_to_gpu_handler(
+        target,
+        gpu,
+    )
+
+    two_stage = PrefetchStageChain(
+        [
+            PrefetchStage(
+                source=PrefetchSource.NVME,
+                target=PrefetchTarget.RAM,
+                handler=nvme_to_ram,
+            ),
+            PrefetchStage(
+                source=PrefetchSource.RAM,
+                target=PrefetchTarget.GPU,
+                handler=ram_to_gpu,
+            ),
+        ]
+    )
+
     transfer.register(
         PrefetchSource.NVME,
         PrefetchTarget.RAM,
-        create_nvme_to_ram_handler(source, target),
+        two_stage,
     )
-
-    if gpu is not None:
-        transfer.register(
-            PrefetchSource.RAM,
-            PrefetchTarget.GPU,
-            create_ram_to_gpu_handler(target, gpu),
-        )
 
     return transfer

@@ -27,6 +27,7 @@ from .storage import (
     create_storage_transfer_executor,
 )
 from .ram import InMemoryPrefetchRam
+from .stages import PrefetchStage, PrefetchStageChain
 
 __all__ = [
     "AdmissionController",
@@ -50,5 +51,7 @@ __all__ = [
     "ExpertStorePrefetchRam",
     "ExpertStorePrefetchStorage",
     "create_nvme_to_ram_handler",
-    "create_storage_transfer_executor"
+    "create_storage_transfer_executor",
+    "PrefetchStage",
+    "PrefetchStageChain",
 ]

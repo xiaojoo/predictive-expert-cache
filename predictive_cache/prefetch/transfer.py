@@ -7,6 +7,7 @@ from .types import (
     PrefetchTask,
     PrefetchTarget,
 )
+from .stages import PrefetchStageChain
 
 
 class PrefetchTransferHandler(Protocol):
@@ -62,3 +63,12 @@ class PrefetchTransferExecutor:
         )
 
         handler(task)
+
+    def register_chain(
+        self,
+        source: PrefetchSource,
+        target: PrefetchTarget,
+        chain: PrefetchStageChain,
+    ) -> None:
+        """Register a multi-stage transfer route."""
+        self._handlers[(source, target)] = chain
