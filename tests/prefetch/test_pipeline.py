@@ -748,3 +748,84 @@ def test_pipeline_reports_storage_backed_nvme_to_ram_failure():
 
     assert nvme.get(1000) is None
     assert ram.get(1000) is None
+
+def test_pipeline_reports_storage_backed_nvme_to_ram_success():
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+    from predictive_cache.prefetch.types import PrefetchStatus
+    from predictive_cache.storage.expert_record import ExpertRecord
+    from predictive_cache.storage.expert_store import ExpertLocation
+    from predictive_cache.storage.nvme import NVMeExpertStore
+    from predictive_cache.storage.ram import RAMExpertStore
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    nvme.put(
+        ExpertRecord(
+            expert_id=1001,
+            location=ExpertLocation.NVME,
+            payload="expert-1001",
+        )
+    )
+
+    def loader(task):
+        raise AssertionError(
+            "default loader must not handle NVMe -> RAM"
+        )
+
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
+        loader,
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=1001,
+                score=0.95,
+                priority=0.95,
+            )
+        ]
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler,
+        engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    pipeline.process([])
+
+    pipeline.stop()
+
+    results = pipeline.results()
+
+    assert len(results) == 1
+
+    result = results[0]
+
+    assert result.expert_id == 1001
+    assert result.status == PrefetchStatus.COMPLETED
+    assert result.error is None
+
+    nvme_record = nvme.get(1001)
+    ram_record = ram.get(1001)
+
+    assert nvme_record is not None
+    assert nvme_record.location == ExpertLocation.NVME
+    assert nvme_record.payload == "expert-1001"
+
+    assert ram_record is not None
+    assert ram_record.expert_id == 1001
+    assert ram_record.location == ExpertLocation.RAM
+    assert ram_record.payload == "expert-1001"
