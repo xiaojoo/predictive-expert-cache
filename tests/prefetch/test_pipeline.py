@@ -599,3 +599,89 @@ def test_pipeline_task_priority_reaches_engine_queue():
 
     finally:
         pipeline.stop(wait=False)
+
+def test_pipeline_executes_storage_backed_nvme_to_ram():
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+    from predictive_cache.storage.expert_record import ExpertRecord
+    from predictive_cache.storage.expert_store import ExpertLocation
+    from predictive_cache.storage.nvme import NVMeExpertStore
+    from predictive_cache.storage.ram import RAMExpertStore
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    nvme.put(
+        ExpertRecord(
+            expert_id=61,
+            location=ExpertLocation.NVME,
+            payload="expert-61",
+        )
+    )
+
+    def loader(task):
+        raise AssertionError(
+            "default loader must not handle NVMe -> RAM"
+        )
+
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=61,
+                score=0.9,
+                priority=0.9,
+                confidence=0.9,
+                estimated_distance=1.0,
+            )
+        ]
+    )
+
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
+        loader,
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        result = pipeline.process([1])
+
+        assert len(result.scheduled_requests) == 1
+        assert len(result.submitted_tasks) == 1
+
+        task = result.submitted_tasks[0]
+
+        assert task.expert_id == 61
+        assert task.source == PrefetchSource.NVME
+        assert task.target == PrefetchTarget.RAM
+        assert task.priority == pytest.approx(0.9)
+        assert task.confidence == pytest.approx(0.9)
+        assert task.estimated_distance == 1
+
+    finally:
+        pipeline.stop()
+
+    nvme_record = nvme.get(61)
+    ram_record = ram.get(61)
+
+    assert nvme_record is not None
+    assert nvme_record.location == ExpertLocation.NVME
+    assert nvme_record.payload == "expert-61"
+
+    assert ram_record is not None
+    assert ram_record.expert_id == 61
+    assert ram_record.location == ExpertLocation.RAM
+    assert ram_record.payload == "expert-61"
