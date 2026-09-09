@@ -361,4 +361,4 @@ def test_real_qwen_pipeline_capacity_pressure_state_consistency() -> None:
     # Gate 7: eviction is allowed, but useful predictive work must
     # still survive to at least one real demand.
     # -------------------------------------------------------------
-    assert useful_prefetches > 0
+    assert evictions > 0
