@@ -528,3 +528,423 @@ def test_real_qwen_routing_admission_reject():
 
     finally:
         pipeline.stop()
+
+def test_real_qwen_routing_duplicate_admission():
+    config = Qwen3MoeConfig(
+        num_hidden_layers=2,
+        hidden_size=128,
+        intermediate_size=256,
+        num_local_experts=8,
+        num_experts_per_tok=2,
+        vocab_size=128,
+    )
+
+    model = Qwen3MoeForCausalLM(config)
+    model.eval()
+
+    cache = PredictiveExpertCache()
+    bridge = QwenRoutingBridge(cache)
+    capture = QwenMoeRoutingCapture(bridge)
+
+    input_ids = torch.tensor(
+        [
+            [10, 11, 12],
+            [20, 21, 22],
+        ],
+        dtype=torch.long,
+    )
+
+    with torch.no_grad():
+        output = capture.capture_forward(
+            model,
+            input_ids=input_ids,
+            step=0,
+        )
+
+    assert output.logits.shape[:2] == (2, 3)
+
+    events = bridge.collector.events()
+
+    assert len(events) == 12
+    assert cache.predictor.step == 6
+
+    current_experts = sorted(
+        {
+            expert_id
+            for event in events
+            if event.step == 5
+            for expert_id in event.expert_ids
+        }
+    )
+
+    assert current_experts
+
+    scheduler = ExpertScheduler(cache)
+
+    loaded = []
+
+    def loader(task):
+        loaded.append(task.expert_id)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        # ---------------------------------------------------------
+        # First submission
+        # ---------------------------------------------------------
+
+        first_result = pipeline.process(current_experts)
+
+        assert first_result.scheduled_requests
+        assert first_result.admission_decisions
+        assert first_result.submitted_tasks
+
+        first_submitted_ids = {
+            task.expert_id
+            for task in first_result.submitted_tasks
+        }
+
+        assert first_submitted_ids
+
+        accepted_first = [
+            decision
+            for decision in first_result.admission_decisions
+            if decision.admitted
+        ]
+
+        assert len(accepted_first) == len(
+            first_result.submitted_tasks
+        )
+
+        # ---------------------------------------------------------
+        # Immediately submit the same predictions again.
+        #
+        # The first batch may still be queued or running. Admission
+        # must prevent the same expert from being submitted again.
+        # ---------------------------------------------------------
+
+        second_result = pipeline.process(current_experts)
+
+        assert second_result.scheduled_requests
+        assert second_result.admission_decisions
+
+        second_submitted_ids = {
+            task.expert_id
+            for task in second_result.submitted_tasks
+        }
+
+        assert not (
+            first_submitted_ids
+            & second_submitted_ids
+        )
+
+        duplicate_decisions = [
+            decision
+            for decision in second_result.admission_decisions
+            if decision.reason
+            in {
+                AdmissionReason.REJECT_DUPLICATE_QUEUED,
+                AdmissionReason.REJECT_DUPLICATE_RUNNING,
+            }
+        ]
+
+        assert duplicate_decisions
+
+        assert all(
+            not decision.admitted
+            for decision in duplicate_decisions
+        )
+
+        # ---------------------------------------------------------
+        # Wait for the first batch to complete.
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                first_result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            first_result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == first_submitted_ids
+
+        # The loader must have executed each first submission once.
+        assert set(loaded) == first_submitted_ids
+
+        # ---------------------------------------------------------
+        # Admission statistics must include the duplicate rejects.
+        # ---------------------------------------------------------
+
+        assert (
+            second_result.admission_stats.rejected
+            >= len(duplicate_decisions)
+        )
+
+    finally:
+        pipeline.stop()
+
+def test_real_qwen_routing_duplicate_admission_after_completion():
+    config = Qwen3MoeConfig(
+        num_hidden_layers=2,
+        hidden_size=128,
+        intermediate_size=256,
+        num_local_experts=8,
+        num_experts_per_tok=2,
+        vocab_size=128,
+    )
+
+    model = Qwen3MoeForCausalLM(config)
+    model.eval()
+
+    cache = PredictiveExpertCache()
+    bridge = QwenRoutingBridge(cache)
+    capture = QwenMoeRoutingCapture(bridge)
+
+    input_ids = torch.tensor(
+        [
+            [10, 11, 12],
+            [20, 21, 22],
+        ],
+        dtype=torch.long,
+    )
+
+    with torch.no_grad():
+        output = capture.capture_forward(
+            model,
+            input_ids=input_ids,
+            step=0,
+        )
+
+    assert output.logits.shape[:2] == (2, 3)
+
+    events = bridge.collector.events()
+
+    assert len(events) == 12
+    assert cache.predictor.step == 6
+
+    current_experts = sorted(
+        {
+            expert_id
+            for event in events
+            if event.step == 5
+            for expert_id in event.expert_ids
+        }
+    )
+
+    assert current_experts
+
+    scheduler = ExpertScheduler(cache)
+
+    loaded = []
+
+    def loader(task):
+        loaded.append(task.expert_id)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        # ---------------------------------------------------------
+        # First submission
+        # ---------------------------------------------------------
+
+        first_result = pipeline.process(current_experts)
+
+        assert first_result.scheduled_requests
+        assert first_result.admission_decisions
+        assert first_result.submitted_tasks
+
+        first_submitted_ids = {
+            task.expert_id
+            for task in first_result.submitted_tasks
+        }
+
+        assert first_submitted_ids
+
+        # ---------------------------------------------------------
+        # Immediate duplicate submission must be rejected.
+        # ---------------------------------------------------------
+
+        second_result = pipeline.process(current_experts)
+
+        assert second_result.scheduled_requests
+        assert second_result.admission_decisions
+
+        second_duplicate_decisions = [
+            decision
+            for decision in second_result.admission_decisions
+            if decision.reason
+            in {
+                AdmissionReason.REJECT_DUPLICATE_QUEUED,
+                AdmissionReason.REJECT_DUPLICATE_RUNNING,
+            }
+        ]
+
+        assert second_duplicate_decisions
+
+        assert all(
+            not decision.admitted
+            for decision in second_duplicate_decisions
+        )
+
+        assert second_result.submitted_tasks == []
+
+        # ---------------------------------------------------------
+        # Wait until the first batch has completely finished.
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                first_result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            first_result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == first_submitted_ids
+
+        assert set(loaded) == first_submitted_ids
+
+        # ---------------------------------------------------------
+        # Clear completed results before the third submission.
+        # This isolates the new submission from the first batch.
+        # ---------------------------------------------------------
+
+        pipeline.clear_results()
+
+        assert pipeline.results() == []
+
+        # ---------------------------------------------------------
+        # After completion, the same real Qwen predictions must
+        # become admissible again.
+        # ---------------------------------------------------------
+
+        third_result = pipeline.process(current_experts)
+
+        assert third_result.scheduled_requests
+        assert third_result.admission_decisions
+        assert third_result.submitted_tasks
+
+        third_submitted_ids = {
+            task.expert_id
+            for task in third_result.submitted_tasks
+        }
+
+        assert third_submitted_ids == first_submitted_ids
+
+        assert all(
+            decision.admitted
+            for decision in third_result.admission_decisions
+            if decision.reason == AdmissionReason.ACCEPT
+        )
+
+        assert len(third_result.submitted_tasks) == len(
+            [
+                decision
+                for decision in third_result.admission_decisions
+                if decision.admitted
+            ]
+        )
+
+        # ---------------------------------------------------------
+        # Wait for the third batch to complete.
+        # ---------------------------------------------------------
+
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            results = pipeline.results()
+
+            if len(results) == len(
+                third_result.submitted_tasks
+            ):
+                break
+
+            time.sleep(0.01)
+
+        results = pipeline.results()
+
+        assert len(results) == len(
+            third_result.submitted_tasks
+        )
+
+        assert all(
+            item.status == PrefetchStatus.COMPLETED
+            for item in results
+        )
+
+        assert {
+            item.expert_id
+            for item in results
+        } == third_submitted_ids
+
+        # Each expert was loaded once in the first batch and once
+        # again after the previous batch completed.
+        assert len(loaded) == (
+            len(first_submitted_ids)
+            + len(third_submitted_ids)
+        )
+
+        assert set(loaded) == (
+            first_submitted_ids
+            | third_submitted_ids
+        )
+
+    finally:
+        pipeline.stop()
