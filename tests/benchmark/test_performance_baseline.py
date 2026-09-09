@@ -362,17 +362,30 @@ def _make_pipeline(
     nvme: InMemoryExpertStore,
     ram: InMemoryExpertStore,
 ) -> tuple[PrefetchPipeline, _CompletionSignalingExecutor]:
+    from predictive_cache.cache import PredictiveExpertCache
+
     engine, completion = _make_engine(
         nvme,
         ram,
     )
 
-    scheduler = ExpertScheduler()
+    cache = PredictiveExpertCache()
+
+    for expert_id in range(64):
+        cache.observe([expert_id])
+
+    scheduler = ExpertScheduler(
+        cache,
+        minimum_benefit=0.0,
+    )
 
     pipeline = PrefetchPipeline(
-        scheduler=scheduler,
-        engine=engine,
+        scheduler,
+        engine,
+        auto_start=False,
     )
+
+    pipeline.start()
 
     return pipeline, completion
 
