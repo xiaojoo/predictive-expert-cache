@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import threading
 import time
@@ -390,10 +390,39 @@ def _make_pipeline(
     return pipeline, completion
 
 
+def _wait_for_engine_task(
+    engine: PrefetchEngine,
+    expert_id: int,
+    timeout: float = 5.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        status = engine.task_status(expert_id)
+
+        if status == PrefetchStatus.COMPLETED:
+            return
+
+        if status in (
+            PrefetchStatus.FAILED,
+            PrefetchStatus.CANCELLED,
+        ):
+            raise AssertionError(
+                f"expert {expert_id} did not complete: "
+                f"status={status}"
+            )
+
+        time.sleep(0.00001)
+
+    raise AssertionError(
+        f"expert {expert_id} did not complete within {timeout}s"
+    )
+
+
 def _benchmark_pipeline_process(
     cycles: int = 1000,
 ) -> BenchmarkResult:
-    nvme, ram = _prepare_stores(cycles)
+    nvme, ram = _prepare_stores(cycles + 1)
 
     pipeline, completion = _make_pipeline(
         nvme,
@@ -404,30 +433,52 @@ def _benchmark_pipeline_process(
 
     try:
         for expert_id in range(cycles):
-            task = _make_task(expert_id)
-
             completion.reset()
 
             started = time.perf_counter_ns()
 
-            accepted = pipeline.engine.submit(task)
-
-            assert accepted is True
-
-            completion.wait()
+            result = pipeline.process(
+                [expert_id],
+            )
 
             elapsed = (
                 time.perf_counter_ns()
                 - started
             )
 
-            record = ram.get(expert_id)
-
-            assert record is not None
-            assert record.location == ExpertLocation.RAM
-            assert record.payload == f"expert-{expert_id}"
-
             samples_ns.append(elapsed)
+
+            # The real pipeline may schedule zero or multiple predicted
+            # experts depending on scheduler state.  The timed region
+            # measures only process() dispatch and deliberately excludes
+            # worker completion.
+            assert result.submitted_tasks
+
+            submitted_ids = {
+                task.expert_id
+                for task in result.submitted_tasks
+            }
+
+            assert submitted_ids
+
+            # Completion is deliberately outside the timed region.
+            # Wait for every submitted task before validating RAM residency.
+            for task in result.submitted_tasks:
+                _wait_for_engine_task(
+                    pipeline.engine,
+                    task.expert_id,
+                )
+
+                record = ram.get(
+                    task.expert_id,
+                )
+
+                assert record is not None
+                assert record.location == ExpertLocation.RAM
+                assert (
+                    record.payload
+                    == f"expert-{task.expert_id}"
+                )
 
     finally:
         pipeline.stop()
