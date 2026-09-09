@@ -685,3 +685,66 @@ def test_pipeline_executes_storage_backed_nvme_to_ram():
     assert ram_record.expert_id == 61
     assert ram_record.location == ExpertLocation.RAM
     assert ram_record.payload == "expert-61"
+
+def test_pipeline_reports_storage_backed_nvme_to_ram_failure():
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+    from predictive_cache.storage.nvme import NVMeExpertStore
+    from predictive_cache.storage.ram import RAMExpertStore
+    from predictive_cache.prefetch.types import PrefetchStatus
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    def loader(task):
+        raise AssertionError(
+            "default loader must not handle NVMe -> RAM"
+        )
+
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
+        loader,
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=1000,
+                score=0.9,
+                priority=0.9,
+            )
+        ]
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler,
+        engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    pipeline.process([])
+
+    pipeline.stop()
+
+    results = pipeline.results()
+
+    assert len(results) == 1
+
+    result = results[0]
+
+    assert result.expert_id == 1000
+    assert result.status == PrefetchStatus.FAILED
+    assert result.error is not None
+    assert "expert 1000" in result.error
+
+    assert nvme.get(1000) is None
+    assert ram.get(1000) is None
