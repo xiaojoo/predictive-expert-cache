@@ -39,7 +39,10 @@ from .qwen import (
     collect_routing_events,
     create_routing_event,
 )
-from .integration import QwenRoutingBridge
+from .integration import (
+    QwenMoeRoutingCapture,
+    QwenRoutingBridge,
+)
 
 __all__ = [
     "RoutingEvent",
@@ -70,4 +73,5 @@ __all__ = [
     "DefaultQwenRoutingAdapter",
     "collect_qwen_routing_output",
     "QwenRoutingBridge",
+    "QwenMoeRoutingCapture",
 ]
