@@ -208,3 +208,151 @@ def test_plan_predictions_without_distance_keeps_priority(
 
     assert requests[0].score == pytest.approx(0.8)
     assert requests[0].priority == pytest.approx(0.8)
+
+def test_distance_factor_none():
+    assert ExpertScheduler._distance_factor(None) == 1.0
+
+
+def test_distance_factor_zero():
+    assert ExpertScheduler._distance_factor(0.0) == 1.0
+
+
+def test_distance_factor_one():
+    assert ExpertScheduler._distance_factor(1.0) == 0.5
+
+
+def test_distance_factor_three():
+    assert ExpertScheduler._distance_factor(3.0) == 0.25
+
+
+def test_distance_factor_nine():
+    assert ExpertScheduler._distance_factor(9.0) == 0.1
+
+
+def test_distance_factor_rejects_negative():
+    with pytest.raises(ValueError, match="distance must be >= 0"):
+        ExpertScheduler._distance_factor(-1.0)
+
+def test_distance_changes_priority_but_not_score(cache):
+    scheduler = ExpertScheduler(cache)
+
+    predictions = [
+        ExpertPrediction(
+            expert_id=1,
+            score=0.8,
+            estimated_distance=1.0,
+        ),
+        ExpertPrediction(
+            expert_id=2,
+            score=0.8,
+            estimated_distance=9.0,
+        ),
+    ]
+
+    requests = scheduler.plan_predictions(
+        predictions,
+        cached_experts=[],
+    )
+
+    assert requests[0].expert_id == 1
+    assert requests[1].expert_id == 2
+
+    assert requests[0].score == pytest.approx(0.8)
+    assert requests[1].score == pytest.approx(0.8)
+
+    assert requests[0].priority == pytest.approx(0.4)
+    assert requests[1].priority == pytest.approx(0.08)
+
+def test_distance_changes_capacity_aware_priority_but_not_score(cache):
+    scheduler = ExpertScheduler(cache)
+
+    predictions = [
+        ExpertPrediction(
+            expert_id=1,
+            score=0.8,
+            estimated_distance=1.0,
+        ),
+        ExpertPrediction(
+            expert_id=2,
+            score=0.8,
+            estimated_distance=9.0,
+        ),
+    ]
+
+    requests = scheduler.plan_predictions(
+        predictions,
+        cached_experts=[],
+        expert_sizes_mb={
+            1: 1,
+            2: 1,
+        },
+        capacity_mb=100,
+        used_mb=0,
+        reuse_cost_ms=100,
+    )
+
+    assert requests[0].expert_id == 1
+    assert requests[1].expert_id == 2
+
+    assert requests[0].score == pytest.approx(80.0)
+    assert requests[1].score == pytest.approx(80.0)
+
+    assert requests[0].priority == pytest.approx(40.0)
+    assert requests[1].priority == pytest.approx(8.0)
+
+def test_distance_does_not_override_minimum_benefit(cache):
+    scheduler = ExpertScheduler(
+        cache,
+        minimum_benefit=10.0,
+    )
+
+    predictions = [
+        ExpertPrediction(
+            expert_id=1,
+            score=0.09,
+            estimated_distance=0.0,
+        ),
+        ExpertPrediction(
+            expert_id=2,
+            score=0.2,
+            estimated_distance=9.0,
+        ),
+    ]
+
+    requests = scheduler.plan_predictions(
+        predictions,
+        cached_experts=[],
+        reuse_cost_ms=1.0,
+    )
+
+    assert [request.expert_id for request in requests] == []
+
+def test_distance_does_not_override_minimum_benefit(cache):
+    scheduler = ExpertScheduler(
+        cache,
+        minimum_benefit=10.0,
+    )
+
+    predictions = [
+        ExpertPrediction(
+            expert_id=1,
+            score=0.09,
+            estimated_distance=0.0,
+        ),
+        ExpertPrediction(
+            expert_id=2,
+            score=0.2,
+            estimated_distance=9.0,
+        ),
+    ]
+
+    requests = scheduler.plan_predictions(
+        predictions,
+        cached_experts=[],
+        reuse_cost_ms=100.0,
+    )
+
+    assert [request.expert_id for request in requests] == [2]
+
+    assert requests[0].score == pytest.approx(20.0)
+    assert requests[0].priority == pytest.approx(2.0)
