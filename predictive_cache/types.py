@@ -54,6 +54,7 @@ class ExpertPrediction:
     recency_score: float = 0.0
     transition_score: float = 0.0
     distance: float | None = None
+    estimated_distance: float | None = None
 
 
 @dataclass(slots=True)

@@ -389,6 +389,7 @@ class ExpertPredictor:
             stats = self._stats[expert_id]
 
             distance = stats.average_distance
+            estimated_distance = distance
 
             score = (
                 self.frequency_weight
@@ -407,6 +408,7 @@ class ExpertPredictor:
                     recency_score=recency_score,
                     transition_score=transition_score,
                     distance=distance,
+                    estimated_distance=estimated_distance,
                 )
             )
 

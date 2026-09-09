@@ -211,3 +211,32 @@ def test_prediction_contains_historical_distance():
     assert len(predictions) == 1
     assert predictions[0].expert_id == 1
     assert predictions[0].distance == 2.0
+
+def test_prediction_contains_estimated_distance():
+    predictor = ExpertPredictor()
+
+    predictor.observe([1])
+    predictor.observe([2])
+    predictor.observe([1])
+
+    predictions = predictor.predict(
+        current_experts=[2],
+        top_k=1,
+    )
+
+    assert predictions[0].distance == 2.0
+    assert predictions[0].estimated_distance == 2.0
+
+def test_prediction_estimated_distance_is_unknown_without_history():
+    predictor = ExpertPredictor()
+
+    predictor.observe([1])
+    predictor.observe([2])
+
+    predictions = predictor.predict(
+        current_experts=[2],
+        top_k=1,
+    )
+
+    assert predictions[0].distance is None
+    assert predictions[0].estimated_distance is None
