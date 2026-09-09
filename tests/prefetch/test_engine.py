@@ -226,3 +226,81 @@ def test_engine_executes_nvme_to_ram_handler():
     assert stored == {
         31: "expert-31",
     }
+
+def test_engine_executes_nvme_to_ram_with_expert_stores():
+    from predictive_cache.storage.expert_record import ExpertRecord
+    from predictive_cache.storage.expert_store import ExpertLocation
+    from predictive_cache.storage.nvme import NVMeExpertStore
+    from predictive_cache.storage.ram import RAMExpertStore
+    from predictive_cache.prefetch.storage import (
+        ExpertStorePrefetchRam,
+        ExpertStorePrefetchStorage,
+    )
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    nvme.put(
+        ExpertRecord(
+            expert_id=51,
+            location=ExpertLocation.NVME,
+            payload="expert-51",
+        )
+    )
+
+    source = ExpertStorePrefetchStorage(nvme)
+    target = ExpertStorePrefetchRam(ram)
+
+    handler = NvmeToRamHandler(
+        source,
+        target,
+    )
+
+    transfer = PrefetchTransferExecutor(
+        lambda task: None,
+    )
+
+    transfer.register(
+        PrefetchSource.NVME,
+        PrefetchTarget.RAM,
+        handler,
+    )
+
+    engine = PrefetchEngine(
+        lambda task: None,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    task = PrefetchTask(
+        expert_id=51,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+        priority=0.9,
+        confidence=0.95,
+        estimated_distance=2,
+    )
+
+    engine.start()
+
+    assert engine.submit(task) is True
+
+    engine.stop()
+
+    result = engine.results()
+
+    assert len(result) == 1
+    assert result[0].expert_id == 51
+    assert result[0].status == PrefetchStatus.COMPLETED
+
+    nvme_record = nvme.get(51)
+    ram_record = ram.get(51)
+
+    assert nvme_record is not None
+    assert nvme_record.location == ExpertLocation.NVME
+    assert nvme_record.payload == "expert-51"
+
+    assert ram_record is not None
+    assert ram_record.expert_id == 51
+    assert ram_record.location == ExpertLocation.RAM
+    assert ram_record.payload == "expert-51"
