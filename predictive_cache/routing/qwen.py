@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from .collector import RoutingEventCollector
 from .models import RoutingEvent
@@ -82,7 +82,32 @@ class QwenRoutingOutput:
         if any(layer_id < 0 for layer_id in normalized):
             raise ValueError("layer_id must be >= 0")
 
+        if not normalized:
+            raise ValueError("layer_expert_ids must not be empty")
+
+        if any(
+            not expert_ids
+            for expert_ids in normalized.values()
+        ):
+            raise ValueError("expert_ids must not be empty")
+
+        if any(
+            expert_id < 0
+            for expert_ids in normalized.values()
+            for expert_id in expert_ids
+        ):
+            raise ValueError("expert_id must be >= 0")
+
+        if any(
+                len(set(expert_ids)) != len(expert_ids)
+                for expert_ids in normalized.values()
+        ):
+            raise ValueError(
+                "expert_ids must not contain duplicates"
+            )
+
         object.__setattr__(self, "layer_expert_ids", normalized)
+
 
 def collect_qwen_routing_output(
     collector: RoutingEventCollector,
@@ -107,6 +132,16 @@ class QwenRoutingAdapter(Protocol):
         *,
         token_id: int,
         layer_expert_ids: dict[int, tuple[int, ...] | list[int]],
+    ) -> QwenRoutingOutput:
+        ...
+
+    def adapt_router_output(
+        self,
+        *,
+        token_id: int,
+        token_position: int,
+        layer_id: int,
+        router_indices: Any,
     ) -> QwenRoutingOutput:
         ...
 

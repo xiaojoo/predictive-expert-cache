@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from ..cache import PredictiveExpertCache
 from ..types import ExpertId
@@ -113,7 +114,7 @@ class QwenRoutingBridge:
         step: int,
         token_id: int,
         token_position: int,
-        layer_router_indices: Mapping[int, object],
+        layer_router_indices: Mapping[int, Any],
     ) -> QwenRoutingOutput:
         """
         Adapt all Qwen MoE layers for one inference step.

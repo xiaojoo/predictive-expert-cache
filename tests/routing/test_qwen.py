@@ -166,6 +166,56 @@ def test_qwen_routing_output_normalizes_expert_ids():
     }
 
 
+def test_qwen_routing_output_rejects_empty_layers():
+    with pytest.raises(
+        ValueError,
+        match="layer_expert_ids must not be empty",
+    ):
+        QwenRoutingOutput(
+            token_id=1,
+            layer_expert_ids={},
+        )
+
+
+def test_qwen_routing_output_rejects_empty_expert_ids():
+    with pytest.raises(
+        ValueError,
+        match="expert_ids must not be empty",
+    ):
+        QwenRoutingOutput(
+            token_id=1,
+            layer_expert_ids={
+                0: [],
+            },
+        )
+
+
+def test_qwen_routing_output_rejects_negative_expert_id():
+    with pytest.raises(
+        ValueError,
+        match="expert_id must be >= 0",
+    ):
+        QwenRoutingOutput(
+            token_id=1,
+            layer_expert_ids={
+                0: [-1, 2],
+            },
+        )
+
+
+def test_qwen_routing_output_rejects_duplicate_expert_ids():
+    with pytest.raises(
+        ValueError,
+        match="expert_ids must not contain duplicates",
+    ):
+        QwenRoutingOutput(
+            token_id=1,
+            layer_expert_ids={
+                0: [1, 2, 1],
+            },
+        )
+
+
 def test_qwen_routing_output_rejects_negative_token():
     with pytest.raises(ValueError, match="token_id must be >= 0"):
         QwenRoutingOutput(
@@ -794,66 +844,6 @@ def test_qwen_router_expert_ids_are_bounded_and_order_preserved():
                 layer_id=2,
                 expert_ids=expected_expert_ids,
             ),
-        )
-
-def test_qwen_router_token_position_boundary_matches_real_router_rows():
-    import torch
-
-    from transformers import Qwen3MoeConfig
-    from transformers.models.qwen3_moe.modeling_qwen3_moe import (
-        Qwen3MoeTopKRouter,
-    )
-
-    config = Qwen3MoeConfig()
-    router = Qwen3MoeTopKRouter(config)
-
-    hidden_states = torch.randn(5, config.hidden_size)
-
-    _, _, router_indices = router(hidden_states)
-
-    adapter = DefaultQwenRoutingAdapter()
-
-    first = adapter.adapt_router_output(
-        token_id=100,
-        token_position=0,
-        layer_id=0,
-        router_indices=router_indices,
-    )
-
-    last = adapter.adapt_router_output(
-        token_id=104,
-        token_position=hidden_states.shape[0] - 1,
-        layer_id=0,
-        router_indices=router_indices,
-    )
-
-    assert first.layer_expert_ids[0] == tuple(
-        int(expert_id)
-        for expert_id in router_indices[0].tolist()
-    )
-
-    assert last.layer_expert_ids[0] == tuple(
-        int(expert_id)
-        for expert_id in router_indices[-1].tolist()
-    )
-
-    assert first.token_id == 100
-    assert last.token_id == 104
-
-    with pytest.raises(IndexError, match="token_position out of range"):
-        adapter.adapt_router_output(
-            token_id=105,
-            token_position=hidden_states.shape[0],
-            layer_id=0,
-            router_indices=router_indices,
-        )
-
-    with pytest.raises(IndexError, match="token_position out of range"):
-        adapter.adapt_router_output(
-            token_id=106,
-            token_position=-1,
-            layer_id=0,
-            router_indices=router_indices,
         )
 
 def test_qwen_router_token_position_boundary_matches_real_router_rows():
