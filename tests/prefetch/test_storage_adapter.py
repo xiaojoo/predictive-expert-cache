@@ -157,3 +157,48 @@ def test_create_nvme_to_ram_handler() -> None:
     assert record.expert_id == 9
     assert record.location == ExpertLocation.RAM
     assert record.payload == "expert-9"
+
+def test_create_storage_transfer_executor_registers_nvme_to_ram() -> None:
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    nvme.put(
+        ExpertRecord(
+            expert_id=11,
+            location=ExpertLocation.NVME,
+            payload="expert-11",
+        )
+    )
+
+    executed: list[int] = []
+
+    def default_handler(task: PrefetchTask) -> None:
+        executed.append(task.expert_id)
+
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
+        default_handler,
+    )
+
+    task = PrefetchTask(
+        expert_id=11,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+        priority=1.0,
+    )
+
+    transfer.execute(task)
+
+    record = ram.get(11)
+
+    assert record is not None
+    assert record.expert_id == 11
+    assert record.location == ExpertLocation.RAM
+    assert record.payload == "expert-11"
+
+    assert executed == []

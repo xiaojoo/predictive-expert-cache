@@ -24,6 +24,7 @@ from .storage import (
     PrefetchRam,
     PrefetchStorage,
     create_nvme_to_ram_handler,
+    create_storage_transfer_executor,
 )
 from .ram import InMemoryPrefetchRam
 
@@ -49,4 +50,5 @@ __all__ = [
     "ExpertStorePrefetchRam",
     "ExpertStorePrefetchStorage",
     "create_nvme_to_ram_handler",
+    "create_storage_transfer_executor"
 ]

@@ -8,7 +8,16 @@ from predictive_cache.storage.expert_store import (
     ExpertStore,
 )
 
-from .types import PrefetchTask
+from .types import (
+    PrefetchSource,
+    PrefetchTarget,
+    PrefetchTask,
+)
+
+from .transfer import (
+    PrefetchTransferExecutor,
+    PrefetchTransferHandler,
+)
 
 
 class PrefetchStorage(Protocol):
@@ -104,3 +113,28 @@ def create_nvme_to_ram_handler(
         ExpertStorePrefetchStorage(source),
         ExpertStorePrefetchRam(target),
     )
+
+def create_storage_transfer_executor(
+    source: ExpertStore,
+    target: ExpertStore,
+    default_handler: PrefetchTransferHandler,
+) -> PrefetchTransferExecutor:
+    """
+    Build a storage-backed prefetch transfer executor.
+
+    The executor currently wires the NVMe -> RAM route.
+    """
+    transfer = PrefetchTransferExecutor(
+        default_handler,
+    )
+
+    transfer.register(
+        PrefetchSource.NVME,
+        PrefetchTarget.RAM,
+        create_nvme_to_ram_handler(
+            source,
+            target,
+        ),
+    )
+
+    return transfer
