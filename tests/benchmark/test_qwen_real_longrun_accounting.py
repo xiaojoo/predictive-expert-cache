@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import time
+
+import torch
+from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+
+from predictive_cache import CacheConfig, PredictiveExpertCache
+from predictive_cache.prefetch.engine import PrefetchEngine
+from predictive_cache.prefetch.pipeline import PrefetchPipeline
+from predictive_cache.prefetch.types import (
+    PrefetchStatus,
+    PrefetchTask,
+)
+from predictive_cache.routing import (
+    QwenMoeRoutingCapture,
+    QwenRoutingBridge,
+)
+from predictive_cache.scheduler import ExpertScheduler
+
+
+LONGRUN_STEPS = 100
+WARMUP_STEPS = 32
+
+
+def _build_real_qwen() -> Qwen2MoeForCausalLM:
+    config = Qwen2MoeConfig(
+        num_hidden_layers=2,
+        hidden_size=128,
+        intermediate_size=256,
+        num_local_experts=8,
+        num_experts_per_tok=2,
+        vocab_size=128,
+        hidden_act="silu",
+    )
+
+    model = Qwen2MoeForCausalLM(config)
+    model.eval()
+    return model
+
+
+def _capture_current(
+    capture: QwenMoeRoutingCapture,
+    model: Qwen2MoeForCausalLM,
+    input_ids: torch.Tensor,
+    step: int,
+) -> list[int]:
+    before = len(capture.bridge.collector.events())
+
+    with torch.no_grad():
+        capture.capture_forward(
+            model,
+            input_ids=input_ids,
+            step=step,
+        )
+
+    events = capture.bridge.collector.events()[before:]
+
+    current: list[int] = []
+
+    for event in events:
+        if event.step != step:
+            continue
+
+        current.extend(
+            int(expert_id)
+            for expert_id in event.expert_ids
+        )
+
+    return sorted(set(current))
+
+
+def _wait_until_terminal(
+    pipeline: PrefetchPipeline,
+    expected: int,
+    timeout: float = 10.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if pipeline.engine.unfinished_tasks == 0:
+            return
+
+        time.sleep(0.01)
+
+    raise AssertionError(
+        "prefetch tasks did not reach terminal state "
+        f"within {timeout:.1f}s; "
+        f"expected={expected}, "
+        f"unfinished={pipeline.engine.unfinished_tasks}"
+    )
+
+
+def _count_terminal_statuses(
+    pipeline: PrefetchPipeline,
+    tasks: list[PrefetchTask],
+) -> tuple[int, int, int]:
+    completed = 0
+    failed = 0
+    cancelled = 0
+
+    for task in tasks:
+        status = pipeline.engine.task_status(
+            task.expert_id
+        )
+
+        if status == PrefetchStatus.COMPLETED:
+            completed += 1
+        elif status == PrefetchStatus.FAILED:
+            failed += 1
+        elif status == PrefetchStatus.CANCELLED:
+            cancelled += 1
+        else:
+            raise AssertionError(
+                "submitted task was not terminal: "
+                f"expert_id={task.expert_id}, "
+                f"status={status}"
+            )
+
+    return completed, failed, cancelled
+
+
+def test_qwen_real_longrun_accounting() -> None:
+    cache = PredictiveExpertCache(
+        CacheConfig(
+            capacity=8,
+            prediction_top_k=3,
+        )
+    )
+
+    bridge = QwenRoutingBridge(cache)
+    capture = QwenMoeRoutingCapture(bridge)
+    model = _build_real_qwen()
+
+    def loader(task: PrefetchTask) -> None:
+        raise RuntimeError(
+            f"intentional long-run failure "
+            f"for expert {task.expert_id}"
+        )
+
+    engine = PrefetchEngine(
+        loader=loader,
+        num_workers=1,
+    )
+
+    scheduler = ExpertScheduler(cache)
+
+    pipeline = PrefetchPipeline(
+        scheduler,
+        engine,
+        auto_start=True,
+    )
+
+    total_scheduled = 0
+    total_submitted = 0
+    total_completed = 0
+    total_failed = 0
+    total_cancelled = 0
+    steps_with_prefetch = 0
+
+    try:
+        # ---------------------------------------------------------
+        # Predictor warm-up.
+        #
+        # The first routing steps may legitimately have no
+        # prediction candidates.
+        # ---------------------------------------------------------
+        warmup_found = False
+
+        for step in range(WARMUP_STEPS):
+            current = _capture_current(
+                capture,
+                model,
+                torch.tensor(
+                    [[10 + (step % 118)]],
+                    dtype=torch.long,
+                ),
+                step=step,
+            )
+
+            assert current
+
+            preview = scheduler.plan_prefetch_predictions(
+                current
+            )
+
+            if preview:
+                warmup_found = True
+                break
+
+        assert warmup_found, (
+            "real Qwen routing did not produce any "
+            "prefetch candidates during warm-up"
+        )
+
+        # ---------------------------------------------------------
+        # Long-run accounting.
+        #
+        # Start after warm-up so that every accounting batch is
+        # generated by the real prediction pipeline.
+        # ---------------------------------------------------------
+        for offset in range(LONGRUN_STEPS):
+            step = WARMUP_STEPS + offset
+
+            current = _capture_current(
+                capture,
+                model,
+                torch.tensor(
+                    [[10 + (step % 118)]],
+                    dtype=torch.long,
+                ),
+                step=step,
+            )
+
+            assert current
+
+            result = pipeline.process(current)
+
+            scheduled = len(
+                result.scheduled_requests
+            )
+            submitted = len(
+                result.submitted_tasks
+            )
+
+            total_scheduled += scheduled
+            total_submitted += submitted
+
+            if submitted == 0:
+                assert scheduled == 0
+                assert pipeline.engine.unfinished_tasks == 0
+                continue
+
+            steps_with_prefetch += 1
+
+            _wait_until_terminal(
+                pipeline,
+                expected=submitted,
+            )
+
+            completed, failed, cancelled = (
+                _count_terminal_statuses(
+                    pipeline,
+                    result.submitted_tasks,
+                )
+            )
+
+            terminal_accounted = (
+                completed
+                + failed
+                + cancelled
+            )
+
+            # Per-batch accounting invariant.
+            assert terminal_accounted == submitted
+
+            # This test intentionally fails every submitted task.
+            assert failed == submitted
+            assert completed == 0
+            assert cancelled == 0
+
+            # Engine must be fully drained before the next batch.
+            assert pipeline.engine.unfinished_tasks == 0
+
+            total_completed += completed
+            total_failed += failed
+            total_cancelled += cancelled
+
+        # ---------------------------------------------------------
+        # Global accounting invariant.
+        # ---------------------------------------------------------
+        assert total_submitted == (
+            total_completed
+            + total_failed
+            + total_cancelled
+        )
+
+        assert total_failed == total_submitted
+        assert total_completed == 0
+        assert total_cancelled == 0
+
+        assert total_submitted > 0
+        assert steps_with_prefetch > 0
+
+        assert pipeline.engine.unfinished_tasks == 0
+
+        resident = sum(
+            1
+            for expert_id in range(8)
+            if cache.get(expert_id) is not None
+        )
+
+        assert resident == 0
+
+        print()
+        print("7-L-5 Real Qwen -> Long-Run Accounting")
+        print("----------------------------------------")
+        print(f"warm-up steps:          {WARMUP_STEPS}")
+        print(f"long-run routing steps: {LONGRUN_STEPS}")
+        print(f"steps with prefetch:    {steps_with_prefetch}")
+        print(f"scheduled requests:     {total_scheduled}")
+        print(f"submitted tasks:        {total_submitted}")
+        print(f"completed:              {total_completed}")
+        print(f"failed:                 {total_failed}")
+        print(f"cancelled:              {total_cancelled}")
+        print(
+            "terminal accounted:     "
+            f"{total_completed + total_failed + total_cancelled}"
+        )
+        print(
+            "unfinished tasks:       "
+            f"{pipeline.engine.unfinished_tasks}"
+        )
+        print(f"resident:               {resident}")
+
+    finally:
+        pipeline.stop()
