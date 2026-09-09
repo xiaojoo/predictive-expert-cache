@@ -4,6 +4,7 @@ import threading
 from typing import Callable
 
 from .queue import PrefetchQueue
+from .transfer import PrefetchTransferExecutor
 from .types import (
     PrefetchResult,
     PrefetchStatus,
@@ -47,6 +48,7 @@ class PrefetchEngine:
             *,
             num_workers: int = 1,
             max_queue_size: int | None = None,
+            transfer_executor: PrefetchTransferExecutor | None = None,
     ) -> None:
         if num_workers <= 0:
             raise ValueError("num_workers must be > 0")
@@ -55,6 +57,11 @@ class PrefetchEngine:
             raise ValueError("max_queue_size must be > 0")
 
         self._loader = loader
+        self._transfer_executor = (
+            transfer_executor
+            if transfer_executor is not None
+            else PrefetchTransferExecutor(loader)
+        )
         self._num_workers = num_workers
 
         self._queue = PrefetchQueue(
@@ -295,7 +302,7 @@ class PrefetchEngine:
         """
 
         try:
-            self._loader(task)
+            self._transfer_executor.execute(task)
 
             return PrefetchResult(
                 expert_id=task.expert_id,
