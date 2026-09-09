@@ -11,23 +11,12 @@ class SchedulerAction(str, Enum):
     WAIT = "wait"
     EVICT = "evict"
 
-
 @dataclass(frozen=True)
 class ExpertPrediction:
-    """
-    Prediction result for one expert.
-
-    probability:
-        Predicted probability that this expert will be needed soon.
-
-    expert_size_mb:
-        Approximate memory footprint of the expert.
-
-    """
-
     expert_id: int
     probability: float
     expert_size_mb: float
+    distance: float | None = None
 
     def __post_init__(self) -> None:
         if self.expert_id < 0:
@@ -38,6 +27,9 @@ class ExpertPrediction:
 
         if self.expert_size_mb <= 0:
             raise ValueError("expert_size_mb must be > 0")
+
+        if self.distance is not None and self.distance < 0:
+            raise ValueError("distance must be >= 0")
 
 
 @dataclass(frozen=True)

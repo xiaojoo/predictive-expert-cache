@@ -128,6 +128,40 @@ class ExpertScheduler:
         ]
 
     # ---------------------------------------------------------
+    # Distance priority
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _distance_factor(
+        distance: float | None,
+    ) -> float:
+        """
+        Convert estimated expert distance into a priority factor.
+
+        Smaller distance means higher urgency.
+
+        Examples:
+            None -> 1.0
+            0    -> 1.0
+            1    -> 0.5
+            3    -> 0.25
+            9    -> 0.1
+
+        Distance is intentionally applied only to final priority.
+        It does not modify the economic benefit calculated by CostModel.
+        """
+
+        if distance is None:
+            return 1.0
+
+        if distance < 0:
+            raise ValueError(
+                "distance must be >= 0"
+            )
+
+        return 1.0 / (1.0 + distance)
+
+    # ---------------------------------------------------------
     # Predictive scheduler
     # ---------------------------------------------------------
 
@@ -148,13 +182,34 @@ class ExpertScheduler:
 
         The method is intentionally pure at the scheduler level:
         it does not perform cache insertion or actual data movement.
+
+        Priority calculation:
+
+            base_score = economic benefit
+
+            distance_factor =
+                1 / (1 + estimated_distance)
+
+            priority =
+                base_score * distance_factor
+
+        The distance factor affects ranking priority only.
+        It does not change CostModel.benefit().
         """
 
         expert_sizes_mb = expert_sizes_mb or {}
         transfer_costs = transfer_costs or {}
         eviction_costs = eviction_costs or {}
 
-        resident = set(cached_experts or self.cache.cached_experts())
+        if cached_experts is not None:
+            resident = set(cached_experts)
+        else:
+            cached = getattr(self.cache, "cached", None)
+
+            if cached is not None:
+                resident = set(cached)
+            else:
+                resident = set(self.cache.cached_experts())
 
         # -----------------------------------------------------
         # Resolve capacity
@@ -184,7 +239,10 @@ class ExpertScheduler:
         # Deduplicate candidates
         # -----------------------------------------------------
 
-        unique: dict[ExpertId, ExpertPrediction] = {}
+        unique: dict[
+            ExpertId,
+            ExpertPrediction,
+        ] = {}
 
         for prediction in predictions:
             expert_id = prediction.expert_id
@@ -217,10 +275,18 @@ class ExpertScheduler:
                 self.default_expert_size_mb,
             )
 
+            # -------------------------------------------------
+            # Build scheduler-level prediction.
+            #
+            # 6B-2.1c:
+            # propagate estimated distance into the scheduler.
+            # -------------------------------------------------
+
             scheduler_prediction = SchedulerPrediction(
-                expert_id=expert_id,
+                expert_id=prediction.expert_id,
                 probability=prediction.score,
                 expert_size_mb=expert_size_mb,
+                distance=prediction.estimated_distance,
             )
 
             transfer_cost = transfer_costs.get(
@@ -233,6 +299,13 @@ class ExpertScheduler:
                 0.0,
             )
 
+            # -------------------------------------------------
+            # No capacity management.
+            #
+            # CostModel decides the economic benefit.
+            # Distance only affects final priority.
+            # -------------------------------------------------
+
             if capacity is None:
                 benefit = self.cost_model.benefit(
                     scheduler_prediction,
@@ -244,15 +317,30 @@ class ExpertScheduler:
                 if benefit <= self.policy.minimum_benefit:
                     continue
 
+                distance_factor = self._distance_factor(
+                    scheduler_prediction.distance
+                )
+
+                priority = (
+                    benefit * distance_factor
+                )
+
                 requests.append(
                     PrefetchRequest(
                         expert_id=expert_id,
                         score=benefit,
-                        priority=benefit,
+                        priority=priority,
                     )
                 )
 
                 continue
+
+            # -------------------------------------------------
+            # Capacity-aware policy.
+            #
+            # SchedulerPolicy returns SchedulerDecision.score
+            # as the calculated benefit.
+            # -------------------------------------------------
 
             decision = self.policy.decide(
                 scheduler_prediction,
@@ -265,11 +353,19 @@ class ExpertScheduler:
             if not decision.should_prefetch:
                 continue
 
+            distance_factor = self._distance_factor(
+                scheduler_prediction.distance
+            )
+
+            priority = (
+                decision.score * distance_factor
+            )
+
             requests.append(
                 PrefetchRequest(
                     expert_id=expert_id,
                     score=decision.score,
-                    priority=decision.score,
+                    priority=priority,
                 )
             )
 
@@ -279,11 +375,11 @@ class ExpertScheduler:
                 expert_size_mb
             )
 
-        # -----------------------------------------------------
-        # Highest benefit first.
+        # ---------------------------------------------------------
+        # Highest final priority first.
         #
         # expert_id provides deterministic tie-breaking.
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
 
         requests.sort(
             key=lambda request: (
