@@ -239,3 +239,55 @@ def test_shutdown_drains_multiple_workers() -> None:
     results = engine.results()
 
     assert len(results) == 10
+
+def test_engine_can_restart_after_graceful_shutdown():
+    loaded: list[int] = []
+
+    def loader(task: PrefetchTask) -> None:
+        loaded.append(task.expert_id)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    # First lifecycle:
+    # start -> submit -> completed -> stop
+    engine.start()
+
+    assert engine.running is True
+    assert engine.submit(make_task(101)) is True
+
+    engine.stop()
+
+    assert engine.running is False
+    assert engine.queue_size == 0
+    assert engine.unfinished_tasks == 0
+    assert engine.task_status(101) == PrefetchStatus.COMPLETED
+
+    # Second lifecycle:
+    # start -> submit -> completed -> stop
+    engine.start()
+
+    assert engine.running is True
+    assert engine.submit(make_task(102)) is True
+
+    engine.stop()
+
+    assert engine.running is False
+    assert engine.queue_size == 0
+    assert engine.unfinished_tasks == 0
+
+    assert loaded == [101, 102]
+
+    assert engine.task_status(101) == PrefetchStatus.COMPLETED
+    assert engine.task_status(102) == PrefetchStatus.COMPLETED
+
+    results = engine.results()
+
+    assert len(results) == 2
+    assert {result.expert_id for result in results} == {101, 102}
+    assert all(
+        result.status == PrefetchStatus.COMPLETED
+        for result in results
+    )
