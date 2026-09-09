@@ -264,3 +264,84 @@ def test_default_qwen_routing_adapter_preserves_validation():
                 -1: [1, 2],
             },
         )
+
+def test_default_qwen_routing_adapter_adapts_router_indices():
+    import torch
+
+    adapter = DefaultQwenRoutingAdapter()
+
+    router_indices = torch.tensor(
+        [
+            [3, 7, 12, 20],
+            [1, 5, 9, 11],
+        ]
+    )
+
+    output = adapter.adapt_router_output(
+        token_id=100,
+        token_position=1,
+        layer_id=5,
+        router_indices=router_indices,
+    )
+
+    assert output.token_id == 100
+    assert output.layer_expert_ids == {
+        5: (1, 5, 9, 11),
+    }
+
+def test_default_qwen_routing_adapter_separates_token_id_and_position():
+    import torch
+
+    adapter = DefaultQwenRoutingAdapter()
+
+    router_indices = torch.tensor(
+        [
+            [2, 4],
+            [6, 8],
+        ]
+    )
+
+    output = adapter.adapt_router_output(
+        token_id=10000,
+        token_position=1,
+        layer_id=12,
+        router_indices=router_indices,
+    )
+
+    assert output.token_id == 10000
+    assert output.layer_expert_ids == {
+        12: (6, 8),
+    }
+
+def test_default_qwen_routing_adapter_rejects_invalid_router_shape():
+    import torch
+    import pytest
+
+    adapter = DefaultQwenRoutingAdapter()
+
+    with pytest.raises(ValueError, match="\\[seq_len, top_k\\]"):
+        adapter.adapt_router_output(
+            token_id=1,
+            token_position=0,
+            layer_id=0,
+            router_indices=torch.tensor([1, 2, 3]),
+        )
+
+def test_default_qwen_routing_adapter_rejects_invalid_token_position():
+    import torch
+    import pytest
+
+    adapter = DefaultQwenRoutingAdapter()
+
+    with pytest.raises(IndexError, match="token_position out of range"):
+        adapter.adapt_router_output(
+            token_id=1,
+            token_position=2,
+            layer_id=0,
+            router_indices=torch.tensor(
+                [
+                    [1, 2],
+                    [3, 4],
+                ]
+            ),
+        )

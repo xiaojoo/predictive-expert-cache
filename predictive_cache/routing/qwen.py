@@ -112,7 +112,7 @@ class QwenRoutingAdapter(Protocol):
 
 
 class DefaultQwenRoutingAdapter:
-    """Default adapter for already-extracted Qwen expert IDs."""
+    """Default adapter for Qwen router output."""
 
     def adapt(
         self,
@@ -123,4 +123,33 @@ class DefaultQwenRoutingAdapter:
         return QwenRoutingOutput(
             token_id=token_id,
             layer_expert_ids=layer_expert_ids,
+        )
+
+    def adapt_router_output(
+        self,
+        *,
+        token_id: int,
+        token_position: int,
+        layer_id: int,
+        router_indices,
+    ) -> QwenRoutingOutput:
+        """Adapt one Qwen router output into normalized routing output."""
+        if router_indices.ndim != 2:
+            raise ValueError(
+                "router_indices must have shape [seq_len, top_k]"
+            )
+
+        if token_position < 0 or token_position >= router_indices.shape[0]:
+            raise IndexError("token_position out of range")
+
+        expert_ids = tuple(
+            int(expert_id)
+            for expert_id in router_indices[token_position].tolist()
+        )
+
+        return QwenRoutingOutput(
+            token_id=token_id,
+            layer_expert_ids={
+                layer_id: expert_ids,
+            },
         )
