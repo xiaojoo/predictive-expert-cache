@@ -17,6 +17,11 @@ from .transfer import (
     PrefetchTransferExecutor,
     PrefetchTransferHandler,
 )
+from .storage import (
+    NvmeToRamHandler,
+    PrefetchRam,
+    PrefetchStorage,
+)
 
 __all__ = [
     "AdmissionController",
@@ -33,4 +38,7 @@ __all__ = [
     "PrefetchTask",
     "PrefetchTransferExecutor",
     "PrefetchTransferHandler",
+    "NvmeToRamHandler",
+    "PrefetchRam",
+    "PrefetchStorage",
 ]

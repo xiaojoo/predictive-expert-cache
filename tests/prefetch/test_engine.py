@@ -7,6 +7,7 @@ from predictive_cache.prefetch import (
     PrefetchTarget,
     PrefetchTask,
     PrefetchTransferExecutor,
+    NvmeToRamHandler,
 )
 
 
@@ -168,3 +169,60 @@ def test_engine_uses_transfer_route():
 
     assert route_calls == [41]
     assert received == []
+
+def test_engine_executes_nvme_to_ram_handler():
+    loaded: list[int] = []
+    stored: dict[int, object] = {}
+
+    class Storage:
+        def load(self, expert_id: int) -> object:
+            loaded.append(expert_id)
+            return f"expert-{expert_id}"
+
+    class Ram:
+        def store(self, expert_id: int, data: object) -> None:
+            stored[expert_id] = data
+
+    storage = Storage()
+    ram = Ram()
+
+    handler = NvmeToRamHandler(
+        storage,
+        ram,
+    )
+
+    transfer = PrefetchTransferExecutor(
+        lambda task: None,
+    )
+
+    transfer.register(
+        PrefetchSource.NVME,
+        PrefetchTarget.RAM,
+        handler,
+    )
+
+    engine = PrefetchEngine(
+        lambda task: None,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    task = PrefetchTask(
+        expert_id=31,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+        priority=0.8,
+        confidence=0.9,
+        estimated_distance=2,
+    )
+
+    engine.start()
+
+    assert engine.submit(task) is True
+
+    engine.stop()
+
+    assert loaded == [31]
+    assert stored == {
+        31: "expert-31",
+    }
