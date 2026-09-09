@@ -300,7 +300,7 @@ def test_distance_changes_capacity_aware_priority_but_not_score(cache):
     assert requests[0].priority == pytest.approx(40.0)
     assert requests[1].priority == pytest.approx(8.0)
 
-def test_distance_does_not_override_minimum_benefit(cache):
+def test_distance_does_not_override_minimum_benefit_with_low_reuse_cost(cache):
     scheduler = ExpertScheduler(
         cache,
         minimum_benefit=10.0,
@@ -327,7 +327,7 @@ def test_distance_does_not_override_minimum_benefit(cache):
 
     assert [request.expert_id for request in requests] == []
 
-def test_distance_does_not_override_minimum_benefit(cache):
+def test_distance_does_not_override_minimum_benefit_with_high_reuse_cost(cache):
     scheduler = ExpertScheduler(
         cache,
         minimum_benefit=10.0,

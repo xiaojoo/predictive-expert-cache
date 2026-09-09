@@ -396,22 +396,23 @@ class ExpertScheduler:
 
         return requests
 
-def plan_prefetch_predictions(
-    self,
-    current_experts: list[ExpertId],
-) -> list[PrefetchRequest]:
-    """
-    Build pipeline-ready prefetch requests from predictor output.
 
-    Unlike the legacy plan_prefetch() entry point, this path preserves
-    prediction metadata and applies the full predictive scheduling logic,
-    including distance-aware priority.
-    """
+    def plan_prefetch_predictions(
+        self,
+        current_experts: list[ExpertId],
+    ) -> list[PrefetchRequest]:
+        """
+        Build pipeline-ready prefetch requests from predictor output.
 
-    predictions = self.cache.prefetch_candidates(
-        current_experts
-    )
+        Unlike the legacy plan_prefetch() entry point, this path preserves
+        prediction metadata and applies the full predictive scheduling logic,
+        including distance-aware priority.
+        """
 
-    return self.plan_predictions(
-        predictions
-    )
+        predictions = self.cache.prefetch_candidates(
+            current_experts
+        )
+
+        return self.plan_predictions(
+            predictions
+        )

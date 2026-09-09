@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from .collector import RoutingEventCollector
-from .models import RoutingEvent
-
 from dataclasses import dataclass
 from typing import Protocol
+
+from .collector import RoutingEventCollector
+from .models import RoutingEvent
 
 
 def create_routing_event(

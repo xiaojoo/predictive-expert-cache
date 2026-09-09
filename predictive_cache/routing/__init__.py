@@ -30,6 +30,16 @@ from .collector import RoutingEventCollector
 from .history import RoutingHistory
 from .models import RoutingEvent
 from .top_k import select_top_k_predictions
+from .qwen import (
+    DefaultQwenRoutingAdapter,
+    QwenRoutingAdapter,
+    QwenRoutingOutput,
+    collect_qwen_routing_output,
+    collect_routing_event,
+    collect_routing_events,
+    create_routing_event,
+)
+from .integration import QwenRoutingBridge
 
 __all__ = [
     "RoutingEvent",
@@ -52,4 +62,12 @@ __all__ = [
     "calculate_prediction_score",
     "recency_score",
     "select_top_k_predictions",
+    "create_routing_event",
+    "collect_routing_event",
+    "collect_routing_events",
+    "QwenRoutingOutput",
+    "QwenRoutingAdapter",
+    "DefaultQwenRoutingAdapter",
+    "collect_qwen_routing_output",
+    "QwenRoutingBridge",
 ]
