@@ -4,13 +4,13 @@ import threading
 from typing import Callable
 
 from .queue import PrefetchQueue
+from .stages import PrefetchCancelled
 from .transfer import PrefetchTransferExecutor
 from .types import (
     PrefetchResult,
     PrefetchStatus,
     PrefetchTask,
 )
-
 
 Loader = Callable[[PrefetchTask], None]
 
@@ -310,6 +310,16 @@ class PrefetchEngine:
                 source=task.source,
                 target=task.target,
                 priority=task.priority,
+            )
+
+        except PrefetchCancelled as exc:
+            return PrefetchResult(
+                expert_id=task.expert_id,
+                status=PrefetchStatus.CANCELLED,
+                source=task.source,
+                target=task.target,
+                priority=task.priority,
+                error=str(exc),
             )
 
         except Exception as exc:

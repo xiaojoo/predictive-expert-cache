@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import shutil
-import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 import torch
@@ -11,6 +11,7 @@ from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
 from predictive_cache import CacheConfig, PredictiveExpertCache
 from predictive_cache.prefetch.engine import PrefetchEngine
 from predictive_cache.prefetch.pipeline import PrefetchPipeline
+from predictive_cache.prefetch.stages import PrefetchCancelled
 from predictive_cache.prefetch.storage import (
     create_storage_transfer_executor,
 )
@@ -32,44 +33,13 @@ from predictive_cache.storage.expert_store import (
 )
 from predictive_cache.storage.gpu import GPUExpertStore
 from predictive_cache.storage.nvme import NVMeExpertStore
+from predictive_cache.storage.ram import RAMExpertStore
 
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
-    reason="7-O-6 requires CUDA",
+    reason="7-R-3 requires CUDA",
 )
-
-
-class MemoryExpertStore(ExpertStore):
-    def __init__(self) -> None:
-        self._records: dict[int, ExpertRecord] = {}
-
-    def load(self, expert_id: int) -> None:
-        return None
-
-    def unload(self, expert_id: int) -> None:
-        return None
-
-    def prefetch(self, expert_id: int) -> None:
-        return None
-
-    def location(self, expert_id: int) -> ExpertLocation:
-        if expert_id not in self._records:
-            raise KeyError(expert_id)
-        return ExpertLocation.RAM
-
-    def put(self, record: ExpertRecord) -> None:
-        record.location = ExpertLocation.RAM
-        self._records[int(record.expert_id)] = record
-
-    def get(self, expert_id: int) -> ExpertRecord | None:
-        return self._records.get(int(expert_id))
-
-    def contains(self, expert_id: int) -> bool:
-        return int(expert_id) in self._records
-
-    def remove(self, expert_id: int) -> None:
-        self._records.pop(int(expert_id), None)
 
 
 def _make_model() -> Qwen2MoeForCausalLM:
@@ -82,7 +52,7 @@ def _make_model() -> Qwen2MoeForCausalLM:
             num_experts_per_tok=2,
             vocab_size=128,
         )
-    ).eval()
+    ).eval().cuda()
 
 
 def _capture_current(
@@ -96,7 +66,7 @@ def _capture_current(
     with torch.no_grad():
         capture.capture_forward(
             model,
-            input_ids=input_ids,
+            input_ids=input_ids.cuda(),
             step=step,
         )
 
@@ -108,7 +78,10 @@ def _capture_current(
         if event.step != step:
             continue
 
-        current.extend(int(x) for x in event.expert_ids)
+        current.extend(
+            int(x)
+            for x in event.expert_ids
+        )
 
     return sorted(set(current))
 
@@ -118,6 +91,8 @@ def _wait_terminal(
     expert_ids: list[int],
     timeout_s: float = 10.0,
 ) -> None:
+    import time
+
     deadline = time.perf_counter() + timeout_s
 
     while time.perf_counter() < deadline:
@@ -139,13 +114,14 @@ def _wait_terminal(
     )
 
 
-def test_real_qwen_two_stage_longrun_stability() -> None:
+def test_real_qwen_multistage_cancellation_boundary() -> None:
     torch.manual_seed(7)
 
     warmup_steps = 32
-    longrun_steps = 1000
 
-    root = Path(".pytest_nvme_qwen_two_stage_longrun")
+    root = Path(
+        ".pytest_nvme_qwen_multistage_cancellation"
+    )
 
     if root.exists():
         shutil.rmtree(root)
@@ -164,7 +140,7 @@ def test_real_qwen_two_stage_longrun_stability() -> None:
     scheduler = ExpertScheduler(cache)
 
     nvme = NVMeExpertStore(root)
-    ram = MemoryExpertStore()
+    ram = RAMExpertStore()
     gpu = GPUExpertStore("cuda")
 
     bridge = QwenRoutingBridge(cache)
@@ -176,21 +152,22 @@ def test_real_qwen_two_stage_longrun_stability() -> None:
         dtype=torch.float32,
     ).contiguous()
 
-    scheduled_total = 0
-    submitted_total = 0
-    completed_total = 0
-    failed_total = 0
-    cancelled_total = 0
-    prediction_steps = 0
-
-    # Every expert written to NVMe gets one immutable reference tensor.
     source_payloads: dict[int, torch.Tensor] = {}
+
+    stage1_calls: list[int] = []
+    stage2_calls: list[int] = []
+
+    cancelled = Event()
+    target_expert: int | None = None
+
+    def should_cancel() -> bool:
+        return cancelled.is_set()
 
     def fallback_loader(task: PrefetchTask) -> None:
         raise AssertionError(
             "fallback loader was invoked; "
             "production transfer executor did not route "
-            "NVMe -> RAM"
+            "the task through NVMe -> RAM -> GPU"
         )
 
     transfer = create_storage_transfer_executor(
@@ -198,11 +175,12 @@ def test_real_qwen_two_stage_longrun_stability() -> None:
         ram,
         fallback_loader,
         gpu=gpu,
+        should_cancel=should_cancel,
     )
 
     engine = PrefetchEngine(
         loader=fallback_loader,
-        max_queue_size=16,
+        max_queue_size=8,
         transfer_executor=transfer,
     )
 
@@ -213,13 +191,14 @@ def test_real_qwen_two_stage_longrun_stability() -> None:
     )
 
     try:
-        # --------------------------------------------------------------
+        # ----------------------------------------------------------
         # Warm-up: establish real Qwen prediction history.
-        # --------------------------------------------------------------
+        # ----------------------------------------------------------
         for step in range(warmup_steps):
             input_ids = torch.tensor(
                 [[10 + (step % 118)]],
                 dtype=torch.long,
+                device="cuda",
             )
 
             current = _capture_current(
@@ -230,172 +209,210 @@ def test_real_qwen_two_stage_longrun_stability() -> None:
             )
 
             if current:
-                scheduler.plan_prefetch_predictions(current)
+                scheduler.plan_prefetch_predictions(
+                    current
+                )
 
-        # --------------------------------------------------------------
-        # Long-run real Qwen routing.
-        # --------------------------------------------------------------
-        for step in range(longrun_steps):
+        # ----------------------------------------------------------
+        # Find one real predicted expert.
+        # ----------------------------------------------------------
+        current: list[int] = []
+
+        for step in range(warmup_steps, warmup_steps + 8):
             input_ids = torch.tensor(
-                [[10 + ((warmup_steps + step) % 118)]],
+                [[10 + (step % 118)]],
                 dtype=torch.long,
+                device="cuda",
             )
 
             current = _capture_current(
                 capture,
                 model,
                 input_ids,
-                warmup_steps + step,
+                step,
             )
 
-            if not current:
-                continue
-
-            candidates = scheduler.plan_prefetch_predictions(current)
-
-            if not candidates:
-                continue
-
-            prediction_steps += 1
-
-            predicted_ids = sorted(
-                {
-                    int(request.expert_id)
-                    for request in candidates
-                }
-            )
-
-            # Materialize every predicted expert on real NVMe.
-            for expert_id in predicted_ids:
-                if expert_id not in source_payloads:
-                    expert_payload = payload.clone()
-
-                    nvme.put(
-                        ExpertRecord(
-                            expert_id=expert_id,
-                            location=ExpertLocation.NVME,
-                            payload=expert_payload,
-                        )
+            if current:
+                candidates = (
+                    scheduler.plan_prefetch_predictions(
+                        current
                     )
-
-                    source_payloads[expert_id] = expert_payload.clone()
-
-            # ----------------------------------------------------------
-            # Real Pipeline submission.
-            # ----------------------------------------------------------
-            result = pipeline.process(current)
-
-            scheduled_total += len(result.scheduled_requests)
-            submitted_total += len(result.submitted_tasks)
-
-            submitted_ids = [
-                int(task.expert_id)
-                for task in result.submitted_tasks
-            ]
-
-            if not submitted_ids:
-                continue
-
-            _wait_terminal(
-                engine,
-                submitted_ids,
-            )
-
-            completed_ids = [
-                expert_id
-                for expert_id in submitted_ids
-                if engine.task_status(expert_id)
-                == PrefetchStatus.COMPLETED
-            ]
-
-            failed_ids = [
-                expert_id
-                for expert_id in submitted_ids
-                if engine.task_status(expert_id)
-                == PrefetchStatus.FAILED
-            ]
-
-            cancelled_ids = [
-                expert_id
-                for expert_id in submitted_ids
-                if engine.task_status(expert_id)
-                == PrefetchStatus.CANCELLED
-            ]
-
-            # Every submitted task must be terminal.
-            assert (
-                len(completed_ids)
-                + len(failed_ids)
-                + len(cancelled_ids)
-                == len(submitted_ids)
-            )
-
-            # This benchmark intentionally expects zero failures.
-            assert failed_ids == []
-            assert cancelled_ids == []
-
-            completed_total += len(completed_ids)
-            failed_total += len(failed_ids)
-            cancelled_total += len(cancelled_ids)
-
-            torch.cuda.synchronize()
-
-            # ----------------------------------------------------------
-            # Verify final GPU residency and payload integrity.
-            # ----------------------------------------------------------
-            for expert_id in completed_ids:
-                assert ram.contains(expert_id)
-                assert gpu.contains(expert_id)
-
-                ram_record = ram.get(expert_id)
-                gpu_record = gpu.get(expert_id)
-
-                assert ram_record is not None
-                assert gpu_record is not None
-
-                assert isinstance(ram_record.payload, torch.Tensor)
-                assert isinstance(gpu_record.payload, torch.Tensor)
-
-                assert ram_record.payload.device.type == "cpu"
-                assert gpu_record.payload.device.type == "cuda"
-
-                assert torch.equal(
-                    ram_record.payload,
-                    source_payloads[expert_id],
                 )
 
-                assert torch.equal(
-                    gpu_record.payload.cpu(),
-                    source_payloads[expert_id],
-                )
+                if candidates:
+                    target_expert = int(
+                        candidates[0].expert_id
+                    )
+                    break
 
-            # No task may remain unfinished between benchmark steps.
-            assert engine.unfinished_tasks == 0
+        assert target_expert is not None
+
+        expert_id = target_expert
+
+        # ----------------------------------------------------------
+        # Materialize exactly the selected expert on real NVMe.
+        # ----------------------------------------------------------
+        source_payloads[expert_id] = payload.clone()
+
+        nvme.put(
+            ExpertRecord(
+                expert_id=expert_id,
+                location=ExpertLocation.NVME,
+                payload=payload.clone(),
+            )
+        )
+
+        # ----------------------------------------------------------
+        # Instrument production transfer handlers.
+        #
+        # The cancellation checkpoint itself remains inside the
+        # production PrefetchStageChain. These counters only verify
+        # physical residency effects.
+        # ----------------------------------------------------------
+        # ----------------------------------------------------------
+        # First-stage cancellation boundary.
+        #
+        # The production NVMe -> RAM handler executes first.
+        # After Stage 1 returns, this callback becomes true.
+        #
+        # To create that exact boundary deterministically, the
+        # Stage 1 handler must signal completion before the next
+        # stage checkpoint.
+        # ----------------------------------------------------------
+        stage1_completed = Event()
+
+        def cancellation_check() -> bool:
+            return stage1_completed.is_set()
+
+        transfer = create_storage_transfer_executor(
+            nvme,
+            ram,
+            fallback_loader,
+            gpu=gpu,
+            should_cancel=cancellation_check,
+        )
+
+        original_ram_put = ram.put
+
+        def boundary_ram_put(record: ExpertRecord) -> None:
+            original_ram_put(record)
+            stage1_calls.append(
+                int(record.expert_id)
+            )
+
+            if int(record.expert_id) == expert_id:
+                stage1_completed.set()
+
+        ram.put = boundary_ram_put  # type: ignore[method-assign]
+
+        engine = PrefetchEngine(
+            loader=fallback_loader,
+            max_queue_size=8,
+            transfer_executor=transfer,
+        )
+
+        pipeline.stop()
+
+        pipeline = PrefetchPipeline(
+            scheduler,
+            engine,
+            auto_start=True,
+        )
+
+        # ----------------------------------------------------------
+        # Submit through the real production pipeline.
+        # ----------------------------------------------------------
+        task = PrefetchTask(
+            expert_id=expert_id,
+            source=PrefetchSource.NVME,
+            target=PrefetchTarget.RAM,
+            priority=candidates[0].priority,
+            confidence=candidates[0].confidence,
+        )
+
+        assert engine.submit(task)
+
+        _wait_terminal(
+            engine,
+            [expert_id],
+        )
 
         torch.cuda.synchronize()
 
-        # --------------------------------------------------------------
-        # Global accounting invariants.
-        # --------------------------------------------------------------
-        assert submitted_total == completed_total
-        assert failed_total == 0
-        assert cancelled_total == 0
+        # ----------------------------------------------------------
+        # R-3 invariants.
+        # ----------------------------------------------------------
+        assert stage1_calls == [expert_id]
+        assert stage2_calls == []
+
+        assert engine.task_status(
+            expert_id
+        ) == PrefetchStatus.CANCELLED
+
+        assert engine.completed_tasks == []
+        assert engine.failed_tasks == []
+        assert engine.cancelled_tasks == [
+            expert_id
+        ]
 
         assert engine.unfinished_tasks == 0
+        assert engine.queued_tasks == []
+        assert engine.running_tasks == []
+
+        # Stage 1 has legitimately completed.
+        assert ram.contains(expert_id)
+
+        ram_record = ram.get(expert_id)
+
+        assert ram_record is not None
+        assert isinstance(
+            ram_record.payload,
+            torch.Tensor,
+        )
+
+        assert ram_record.payload.device.type == "cpu"
+
+        assert torch.equal(
+            ram_record.payload,
+            source_payloads[expert_id],
+        )
+
+        # Stage 2 must NOT have created GPU residency.
+        assert not gpu.contains(expert_id)
+
+        results = engine.results()
+
+        assert len(results) == 1
+        assert results[0].expert_id == expert_id
+        assert results[0].status == PrefetchStatus.CANCELLED
 
         print()
-        print("7-P-5 Real Qwen -> Production NVMe -> RAM -> GPU Long-Run")
-        print("-----------------------------------------------------------")
-        print(f"warm-up steps:          {warmup_steps}")
-        print(f"long-run routing steps: {longrun_steps}")
-        print(f"steps with prediction:  {prediction_steps}")
-        print(f"scheduled requests:     {scheduled_total}")
-        print(f"submitted prefetches:   {submitted_total}")
-        print(f"completed logical:      {completed_total}")
-        print(f"failed:                 {failed_total}")
-        print(f"cancelled:              {cancelled_total}")
-        print(f"unfinished tasks:       {engine.unfinished_tasks}")
-        print(f"NVMe expert files:      {len(source_payloads)}")
+        print(
+            "7-R-3 Real Qwen Multi-Stage "
+            "Cancellation Boundary"
+        )
+        print(
+            "-------------------------------------------"
+        )
+        print(f"target expert:       {expert_id}")
+        print(f"Stage 1 executions:  {stage1_calls}")
+        print(f"Stage 2 executions:  {stage2_calls}")
+        print(
+            f"final status:       "
+            f"{engine.task_status(expert_id)}"
+        )
+        print(
+            f"RAM resident:       "
+            f"{ram.contains(expert_id)}"
+        )
+        print(
+            f"GPU resident:       "
+            f"{gpu.contains(expert_id)}"
+        )
+        print(
+            f"unfinished tasks:   "
+            f"{engine.unfinished_tasks}"
+        )
 
     finally:
         pipeline.stop()

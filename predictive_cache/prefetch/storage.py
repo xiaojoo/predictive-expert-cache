@@ -113,18 +113,22 @@ def create_ram_to_gpu_handler(
         target,
     )
 
+
 def create_storage_transfer_executor(
-    source: ExpertStore,
-    target: ExpertStore,
-    default_handler: PrefetchTransferHandler,
+    source,
+    target,
+    default_handler,
     *,
-    gpu: ExpertStore | None = None,
+    gpu=None,
+    should_cancel=None,
+    nvme_to_ram_handler=None,
 ) -> PrefetchTransferExecutor:
     transfer = PrefetchTransferExecutor(default_handler)
 
-    nvme_to_ram = create_nvme_to_ram_handler(
-        source,
-        target,
+    nvme_to_ram = (
+        nvme_to_ram_handler
+        if nvme_to_ram_handler is not None
+        else create_nvme_to_ram_handler(source, target)
     )
 
     if gpu is None:
@@ -152,7 +156,8 @@ def create_storage_transfer_executor(
                 target=PrefetchTarget.GPU,
                 handler=ram_to_gpu,
             ),
-        ]
+        ],
+        should_cancel=should_cancel,
     )
 
     transfer.register(

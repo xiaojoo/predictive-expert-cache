@@ -7,6 +7,11 @@ from .types import PrefetchTask, PrefetchTarget
 
 
 StageHandler = Callable[[PrefetchTask], None]
+CancellationCheck = Callable[[], bool]
+
+
+class PrefetchCancelled(RuntimeError):
+    """Raised when a prefetch is cancelled at a stage boundary."""
 
 
 @dataclass(frozen=True)
@@ -24,11 +29,14 @@ class PrefetchStageChain:
     def __init__(
         self,
         stages: Sequence[PrefetchStage],
+        *,
+        should_cancel: CancellationCheck | None = None,
     ) -> None:
         if not stages:
             raise ValueError("at least one prefetch stage is required")
 
         self._stages = tuple(stages)
+        self._should_cancel = should_cancel
 
     @property
     def stages(self) -> tuple[PrefetchStage, ...]:
@@ -44,7 +52,16 @@ class PrefetchStageChain:
     def execute(self, task: PrefetchTask) -> None:
         current = task
 
-        for stage in self._stages:
+        for index, stage in enumerate(self._stages):
+            if (
+                self._should_cancel is not None
+                and self._should_cancel()
+            ):
+                raise PrefetchCancelled(
+                    f"prefetch task {task.expert_id} "
+                    f"cancelled before stage {index + 1}"
+                )
+
             current = replace(
                 current,
                 source=stage.source,
