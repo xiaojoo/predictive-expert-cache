@@ -829,3 +829,108 @@ def test_pipeline_reports_storage_backed_nvme_to_ram_success():
     assert ram_record.expert_id == 1001
     assert ram_record.location == ExpertLocation.RAM
     assert ram_record.payload == "expert-1001"
+
+def test_pipeline_executes_multiple_storage_backed_nvme_to_ram_tasks():
+    from predictive_cache.prefetch.storage import (
+        create_storage_transfer_executor,
+    )
+    from predictive_cache.prefetch.types import PrefetchStatus
+    from predictive_cache.storage.expert_record import ExpertRecord
+    from predictive_cache.storage.expert_store import ExpertLocation
+    from predictive_cache.storage.nvme import NVMeExpertStore
+    from predictive_cache.storage.ram import RAMExpertStore
+
+    nvme = NVMeExpertStore()
+    ram = RAMExpertStore()
+
+    experts = {
+        101: "expert-101",
+        102: "expert-102",
+        103: "expert-103",
+    }
+
+    for expert_id, payload in experts.items():
+        nvme.put(
+            ExpertRecord(
+                expert_id=expert_id,
+                location=ExpertLocation.NVME,
+                payload=payload,
+            )
+        )
+
+    def loader(task):
+        raise AssertionError(
+            "default loader must not handle NVMe -> RAM"
+        )
+
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
+        loader,
+    )
+
+    engine = PrefetchEngine(
+        loader,
+        transfer_executor=transfer,
+        num_workers=1,
+    )
+
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=101,
+                score=0.9,
+                priority=0.9,
+            ),
+            PrefetchRequest(
+                expert_id=102,
+                score=0.8,
+                priority=0.8,
+            ),
+            PrefetchRequest(
+                expert_id=103,
+                score=0.7,
+                priority=0.7,
+            ),
+        ]
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler,
+        engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    pipeline.process([])
+
+    pipeline.stop()
+
+    results = pipeline.results()
+
+    assert len(results) == 3
+
+    results_by_id = {
+        result.expert_id: result
+        for result in results
+    }
+
+    assert set(results_by_id) == {101, 102, 103}
+
+    for expert_id in experts:
+        result = results_by_id[expert_id]
+
+        assert result.status == PrefetchStatus.COMPLETED
+        assert result.error is None
+
+        nvme_record = nvme.get(expert_id)
+        ram_record = ram.get(expert_id)
+
+        assert nvme_record is not None
+        assert nvme_record.location == ExpertLocation.NVME
+        assert nvme_record.payload == experts[expert_id]
+
+        assert ram_record is not None
+        assert ram_record.expert_id == expert_id
+        assert ram_record.location == ExpertLocation.RAM
+        assert ram_record.payload == experts[expert_id]
