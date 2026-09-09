@@ -76,6 +76,7 @@ class ExpertPredictor:
         self.recency_decay = recency_decay
 
         self._step = 0
+        self._max_frequency = 0
 
         self._stats: dict[
             ExpertId,
@@ -86,6 +87,8 @@ class ExpertPredictor:
             ExpertId,
             Counter[ExpertId],
         ] = defaultdict(Counter)
+
+        self._transition_totals: dict[ExpertId, int] = defaultdict(int)
 
         self._recent: deque[ExpertId] = deque(
             maxlen=recent_window
@@ -147,6 +150,9 @@ class ExpertPredictor:
             stats.frequency += 1
             stats.last_seen_step = current_step
 
+            if stats.frequency > self._max_frequency:
+                self._max_frequency = stats.frequency
+
             self._recent.append(
                 expert_id
             )
@@ -156,15 +162,12 @@ class ExpertPredictor:
         # -----------------------------------------------------
 
         if self._previous_experts:
-            for prev_expert in self._previous_experts:
+            for previous_expert in self._previous_experts:
+                transitions = self._transitions[previous_expert]
+
                 for current_expert in current:
-                    if (
-                        prev_expert
-                        != current_expert
-                    ):
-                        self._transitions[
-                            prev_expert
-                        ][current_expert] += 1
+                    transitions[current_expert] += 1
+                    self._transition_totals[previous_expert] += 1
 
         self._previous_experts = current
 
@@ -225,48 +228,42 @@ class ExpertPredictor:
     # ---------------------------------------------------------
 
     def transition_probability(
-        self,
-        current_expert: ExpertId,
-        next_expert: ExpertId,
+            self,
+            current_expert: ExpertId,
+            next_expert: ExpertId,
     ) -> float:
-
         transitions = self._transitions.get(
             current_expert
         )
 
-        if not transitions:
+        if transitions is None:
             return 0.0
 
-        total = sum(
-            transitions.values()
+        total = self._transition_totals.get(
+            current_expert,
+            0,
         )
 
         if total == 0:
             return 0.0
 
-        return (
-            transitions[next_expert]
-            / total
+        count = transitions.get(
+            next_expert,
+            0,
         )
+
+        return count / total
 
     # ---------------------------------------------------------
     # Frequency score
     # ---------------------------------------------------------
 
     def _frequency_score(
-        self,
-        expert_id: ExpertId,
+            self,
+            expert_id: ExpertId,
     ) -> float:
 
-        if not self._stats:
-            return 0.0
-
-        max_frequency = max(
-            stats.frequency
-            for stats in self._stats.values()
-        )
-
-        if max_frequency == 0:
+        if self._max_frequency == 0:
             return 0.0
 
         stats = self._stats.get(
@@ -277,8 +274,8 @@ class ExpertPredictor:
             return 0.0
 
         return (
-            stats.frequency
-            / max_frequency
+                stats.frequency
+                / self._max_frequency
         )
 
     # ---------------------------------------------------------
