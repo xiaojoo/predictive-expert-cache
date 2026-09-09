@@ -3,51 +3,22 @@ from __future__ import annotations
 from typing import Protocol
 
 from predictive_cache.storage.expert_record import ExpertRecord
-from predictive_cache.storage.expert_store import (
-    ExpertLocation,
-    ExpertStore,
-)
+from predictive_cache.storage.expert_store import ExpertLocation, ExpertStore
 
-from .types import (
-    PrefetchSource,
-    PrefetchTarget,
-    PrefetchTask,
-)
-
-from .transfer import (
-    PrefetchTransferExecutor,
-    PrefetchTransferHandler,
-)
+from .transfer import PrefetchTransferExecutor, PrefetchTransferHandler
+from .types import PrefetchSource, PrefetchTarget, PrefetchTask
 
 
 class PrefetchStorage(Protocol):
-    """Source storage for prefetch data."""
-
-    def load(self, expert_id: int) -> object:
-        """Load one expert payload from the source storage."""
-        ...
+    def load(self, expert_id: int) -> object: ...
 
 
 class PrefetchRam(Protocol):
-    """Target RAM storage for prefetched data."""
-
-    def store(self, expert_id: int, data: object) -> None:
-        """Store one expert payload in RAM."""
-        ...
+    def store(self, expert_id: int, data: object) -> None: ...
 
 
 class ExpertStorePrefetchStorage:
-    """
-    Adapt an existing ExpertStore as a prefetch source.
-
-    The existing ExpertStore owns the ExpertRecord lifecycle.
-    Prefetch only consumes the record payload.
-    """
-
-    def __init__(
-        self,
-        store: ExpertStore,
-    ) -> None:
+    def __init__(self, store: ExpertStore) -> None:
         self._store = store
 
     def load(self, expert_id: int) -> object:
@@ -62,21 +33,10 @@ class ExpertStorePrefetchStorage:
 
 
 class ExpertStorePrefetchRam:
-    """
-    Adapt an existing ExpertStore as a prefetch RAM target.
-    """
-
-    def __init__(
-        self,
-        store: ExpertStore,
-    ) -> None:
+    def __init__(self, store: ExpertStore) -> None:
         self._store = store
 
-    def store(
-        self,
-        expert_id: int,
-        data: object,
-    ) -> None:
+    def store(self, expert_id: int, data: object) -> None:
         self._store.put(
             ExpertRecord(
                 expert_id=expert_id,
@@ -87,8 +47,6 @@ class ExpertStorePrefetchRam:
 
 
 class NvmeToRamHandler:
-    """Transfer one expert from storage into RAM."""
-
     def __init__(
         self,
         storage: PrefetchStorage,
@@ -101,40 +59,80 @@ class NvmeToRamHandler:
         data = self._storage.load(task.expert_id)
         self._ram.store(task.expert_id, data)
 
+
+class RamToGpuHandler:
+    """
+    Transfer an expert from RAM storage to GPU storage.
+
+    The RAM record is left untouched. A separate ExpertRecord is created
+    for the GPU store so that the two storage locations remain independent.
+    """
+
+    def __init__(
+        self,
+        ram: ExpertStore,
+        gpu: ExpertStore,
+    ) -> None:
+        self._ram = ram
+        self._gpu = gpu
+
+    def __call__(self, task: PrefetchTask) -> None:
+        record = self._ram.get(task.expert_id)
+
+        if record is None:
+            raise KeyError(
+                f"expert {task.expert_id!r} is not present in RAM storage"
+            )
+
+        gpu_record = ExpertRecord(
+            expert_id=record.expert_id,
+            location=ExpertLocation.RAM,
+            payload=record.payload,
+        )
+
+        self._gpu.put(gpu_record)
+
+
 def create_nvme_to_ram_handler(
     source: ExpertStore,
     target: ExpertStore,
 ) -> NvmeToRamHandler:
-    """
-    Build the NVMe -> RAM prefetch transfer handler
-    from the existing ExpertStore implementations.
-    """
     return NvmeToRamHandler(
         ExpertStorePrefetchStorage(source),
         ExpertStorePrefetchRam(target),
     )
 
+
+def create_ram_to_gpu_handler(
+    source: ExpertStore,
+    target: ExpertStore,
+) -> RamToGpuHandler:
+    return RamToGpuHandler(
+        source,
+        target,
+    )
+
+
 def create_storage_transfer_executor(
     source: ExpertStore,
     target: ExpertStore,
     default_handler: PrefetchTransferHandler,
+    *,
+    gpu: ExpertStore | None = None,
 ) -> PrefetchTransferExecutor:
-    """
-    Build a storage-backed prefetch transfer executor.
-
-    The executor currently wires the NVMe -> RAM route.
-    """
-    transfer = PrefetchTransferExecutor(
-        default_handler,
-    )
+    transfer = PrefetchTransferExecutor(default_handler)
 
     transfer.register(
         PrefetchSource.NVME,
         PrefetchTarget.RAM,
-        create_nvme_to_ram_handler(
-            source,
-            target,
-        ),
+        create_nvme_to_ram_handler(source, target),
     )
+
+    if gpu is not None:
+        transfer.register(
+            PrefetchSource.RAM,
+            PrefetchTarget.GPU,
+            create_ram_to_gpu_handler(target, gpu),
+        )
 
     return transfer
