@@ -22,6 +22,7 @@ from .storage import (
     PrefetchRam,
     PrefetchStorage,
 )
+from .ram import InMemoryPrefetchRam
 
 __all__ = [
     "AdmissionController",
@@ -41,4 +42,5 @@ __all__ = [
     "NvmeToRamHandler",
     "PrefetchRam",
     "PrefetchStorage",
+    "InMemoryPrefetchRam",
 ]
