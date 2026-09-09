@@ -8,6 +8,7 @@ from predictive_cache.prefetch import (
     PrefetchTask,
     PrefetchTransferExecutor,
     NvmeToRamHandler,
+    create_storage_transfer_executor
 )
 
 
@@ -248,22 +249,10 @@ def test_engine_executes_nvme_to_ram_with_expert_stores():
         )
     )
 
-    source = ExpertStorePrefetchStorage(nvme)
-    target = ExpertStorePrefetchRam(ram)
-
-    handler = NvmeToRamHandler(
-        source,
-        target,
-    )
-
-    transfer = PrefetchTransferExecutor(
+    transfer = create_storage_transfer_executor(
+        nvme,
+        ram,
         lambda task: None,
-    )
-
-    transfer.register(
-        PrefetchSource.NVME,
-        PrefetchTarget.RAM,
-        handler,
     )
 
     engine = PrefetchEngine(
