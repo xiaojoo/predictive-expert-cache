@@ -471,3 +471,131 @@ def test_pipeline_uses_predictive_scheduler_metadata() -> None:
 
     finally:
         pipeline.stop()
+
+def test_pipeline_preserves_scheduler_priority():
+    class FakeScheduler:
+        def plan_prefetch_predictions(self, current_experts):
+            return [
+                PrefetchRequest(
+                    expert_id=2,
+                    score=0.8,
+                    priority=0.2,
+                    confidence=0.8,
+                    estimated_distance=4,
+                ),
+                PrefetchRequest(
+                    expert_id=1,
+                    score=0.7,
+                    priority=0.9,
+                    confidence=0.7,
+                    estimated_distance=0,
+                ),
+            ]
+
+    loaded = []
+
+    def loader(task):
+        loaded.append(task)
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=FakeScheduler(),
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        result = pipeline.process([99])
+
+        assert [task.expert_id for task in result.submitted_tasks] == [
+            2,
+            1,
+        ]
+
+        assert [
+            task.priority
+            for task in result.submitted_tasks
+        ] == [
+            0.2,
+            0.9,
+        ]
+
+        assert [
+            task.confidence
+            for task in result.submitted_tasks
+        ] == [
+            0.8,
+            0.7,
+        ]
+
+        assert [
+            task.estimated_distance
+            for task in result.submitted_tasks
+        ] == [
+            4,
+            0,
+        ]
+
+    finally:
+        pipeline.stop(wait=False)
+
+def test_pipeline_task_priority_reaches_engine_queue():
+    class FakeScheduler:
+        def plan_prefetch_predictions(self, current_experts):
+            return [
+                PrefetchRequest(
+                    expert_id=2,
+                    score=0.8,
+                    priority=0.2,
+                    confidence=0.8,
+                    estimated_distance=4,
+                ),
+                PrefetchRequest(
+                    expert_id=1,
+                    score=0.7,
+                    priority=0.9,
+                    confidence=0.7,
+                    estimated_distance=0,
+                ),
+            ]
+
+    def loader(task):
+        pass
+
+    engine = PrefetchEngine(
+        loader,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=FakeScheduler(),
+        engine=engine,
+        source=PrefetchSource.NVME,
+        target=PrefetchTarget.RAM,
+    )
+
+    try:
+        result = pipeline.process([99])
+
+        assert len(result.submitted_tasks) == 2
+        assert pipeline.queue_size == 2
+
+        first = engine._queue.get()
+        second = engine._queue.get()
+
+        assert first.expert_id == 1
+        assert first.priority == 0.9
+
+        assert second.expert_id == 2
+        assert second.priority == 0.2
+
+        engine._queue.task_done()
+        engine._queue.task_done()
+
+    finally:
+        pipeline.stop(wait=False)
