@@ -20,6 +20,8 @@ class PrefetchRequest:
     expert_id: ExpertId
     score: float
     priority: float
+    confidence: float | None = None
+    estimated_distance: float | None = None
 
 
 class ExpertScheduler:
@@ -321,15 +323,17 @@ class ExpertScheduler:
                     scheduler_prediction.distance
                 )
 
-                priority = (
-                    benefit * distance_factor
-                )
+                priority = benefit * distance_factor
 
                 requests.append(
                     PrefetchRequest(
                         expert_id=expert_id,
                         score=benefit,
                         priority=priority,
+                        confidence=prediction.score,
+                        estimated_distance=(
+                            prediction.estimated_distance
+                        ),
                     )
                 )
 
@@ -357,15 +361,17 @@ class ExpertScheduler:
                 scheduler_prediction.distance
             )
 
-            priority = (
-                decision.score * distance_factor
-            )
+            priority = decision.score * distance_factor
 
             requests.append(
                 PrefetchRequest(
                     expert_id=expert_id,
                     score=decision.score,
                     priority=priority,
+                    confidence=prediction.score,
+                    estimated_distance=(
+                        prediction.estimated_distance
+                    ),
                 )
             )
 
@@ -389,3 +395,23 @@ class ExpertScheduler:
         )
 
         return requests
+
+def plan_prefetch_predictions(
+    self,
+    current_experts: list[ExpertId],
+) -> list[PrefetchRequest]:
+    """
+    Build pipeline-ready prefetch requests from predictor output.
+
+    Unlike the legacy plan_prefetch() entry point, this path preserves
+    prediction metadata and applies the full predictive scheduling logic,
+    including distance-aware priority.
+    """
+
+    predictions = self.cache.prefetch_candidates(
+        current_experts
+    )
+
+    return self.plan_predictions(
+        predictions
+    )

@@ -105,13 +105,22 @@ class PrefetchPipeline:
     # ---------------------------------------------------------
 
     def process(
-        self,
-        current_experts: list[int],
+            self,
+            current_experts: list[int],
     ) -> PipelineResult:
 
-        requests = self.scheduler.plan_prefetch(
-            current_experts
+        planner = getattr(
+            self.scheduler,
+            "plan_prefetch_predictions",
+            None,
         )
+
+        if planner is not None:
+            requests = planner(current_experts)
+        else:
+            requests = self.scheduler.plan_prefetch(
+                current_experts
+            )
 
         scheduled_requests = list(
             requests or []
@@ -129,7 +138,6 @@ class PrefetchPipeline:
             )
 
             admission_decisions.append(decision)
-
             self.admission_stats.record(decision)
 
             if not decision.admitted:
@@ -151,16 +159,37 @@ class PrefetchPipeline:
     # ---------------------------------------------------------
 
     def _request_to_task(
-        self,
-        request: PrefetchRequest,
+            self,
+            request: PrefetchRequest,
     ) -> PrefetchTask:
+
+        confidence = getattr(
+            request,
+            "confidence",
+            None,
+        )
+
+        estimated_distance = getattr(
+            request,
+            "estimated_distance",
+            None,
+        )
 
         return PrefetchTask(
             expert_id=request.expert_id,
             source=self.source,
             target=self.target,
             priority=request.priority,
-            confidence=request.score,
+            confidence=(
+                confidence
+                if confidence is not None
+                else request.score
+            ),
+            estimated_distance=(
+                estimated_distance
+                if estimated_distance is not None
+                else 0
+            ),
         )
 
     # ---------------------------------------------------------

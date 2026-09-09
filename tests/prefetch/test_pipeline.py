@@ -10,7 +10,7 @@ from predictive_cache.prefetch import (
     PrefetchTarget,
 )
 from predictive_cache.scheduler import PrefetchRequest
-from predictive_cache.prefetch.admission import AdmissionReason
+import pytest
 
 class FakeScheduler:
     def __init__(self, requests):
@@ -356,6 +356,118 @@ def test_pipeline_result_contains_detached_admission_stats_snapshot():
 
         # Each PipelineResult owns its own stats snapshot.
         assert result1.admission_stats is not result2.admission_stats
+
+    finally:
+        pipeline.stop()
+
+def test_pipeline_propagates_scheduler_prediction_metadata():
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=10,
+                score=12.0,
+                priority=6.0,
+                confidence=0.8,
+                estimated_distance=3.0,
+            )
+        ]
+    )
+
+    engine = PrefetchEngine(
+        lambda _task: None,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+    )
+
+    try:
+        result = pipeline.process([1])
+
+        assert len(result.submitted_tasks) == 1
+
+        task = result.submitted_tasks[0]
+
+        assert task.expert_id == 10
+        assert task.confidence == pytest.approx(0.8)
+        assert task.priority == pytest.approx(6.0)
+        assert task.estimated_distance == 3
+    finally:
+        pipeline.stop()
+
+def test_pipeline_keeps_legacy_request_compatibility():
+    scheduler = FakeScheduler(
+        [
+            PrefetchRequest(
+                expert_id=10,
+                score=0.8,
+                priority=0.5,
+            )
+        ]
+    )
+
+    engine = PrefetchEngine(
+        lambda _task: None,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+    )
+
+    try:
+        result = pipeline.process([1])
+
+        assert len(result.submitted_tasks) == 1
+
+        task = result.submitted_tasks[0]
+
+        assert task.confidence == pytest.approx(0.8)
+        assert task.priority == pytest.approx(0.5)
+        assert task.estimated_distance == 0
+    finally:
+        pipeline.stop()
+
+def test_pipeline_uses_predictive_scheduler_metadata() -> None:
+    cache = PredictiveExpertCache()
+
+    cache.observe([1])
+    cache.observe([2])
+    cache.observe([1])
+    cache.observe([3])
+
+    scheduler = ExpertScheduler(cache)
+
+    engine = PrefetchEngine(
+        lambda _task: None,
+        num_workers=1,
+    )
+
+    pipeline = PrefetchPipeline(
+        scheduler=scheduler,
+        engine=engine,
+    )
+
+    try:
+        result = pipeline.process([1])
+
+        assert result.submitted_tasks
+
+        tasks = {
+            task.expert_id: task
+            for task in result.submitted_tasks
+        }
+
+        assert 2 in tasks
+        assert 3 in tasks
+
+        for task in tasks.values():
+            assert 0.0 <= task.confidence <= 1.0
+            assert task.estimated_distance >= 0
+            assert task.priority >= 0.0
 
     finally:
         pipeline.stop()
