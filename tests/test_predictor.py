@@ -181,3 +181,33 @@ def test_duplicate_experts_in_one_router_event_are_counted_once():
     assert predictor.stats[1].frequency == 1
     assert predictor.stats[2].frequency == 1
     assert predictor.recent == [1, 2]
+
+def test_expert_distance():
+    predictor = ExpertPredictor()
+
+    predictor.observe([1])
+    predictor.observe([2])
+    predictor.observe([3])
+    predictor.observe([1])
+
+    stats = predictor.stats[1]
+
+    assert stats.distance_count == 1
+    assert stats.distance_sum == 3
+    assert stats.average_distance == 3.0
+
+def test_prediction_contains_historical_distance():
+    predictor = ExpertPredictor()
+
+    predictor.observe([1])
+    predictor.observe([2])
+    predictor.observe([1])
+
+    predictions = predictor.predict(
+        current_experts=[2],
+        top_k=1,
+    )
+
+    assert len(predictions) == 1
+    assert predictions[0].expert_id == 1
+    assert predictions[0].distance == 2.0

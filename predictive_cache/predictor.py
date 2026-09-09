@@ -124,6 +124,10 @@ class ExpertPredictor:
                 expert_id
             )
 
+            stats = self._stats.get(
+                expert_id
+            )
+
             if stats is None:
                 stats = ExpertStats(
                     expert_id=expert_id,
@@ -131,6 +135,14 @@ class ExpertPredictor:
                 )
 
                 self._stats[expert_id] = stats
+            elif stats.last_seen_step >= 0:
+                distance = (
+                        current_step
+                        - stats.last_seen_step
+                )
+
+                stats.distance_sum += distance
+                stats.distance_count += 1
 
             stats.frequency += 1
             stats.last_seen_step = current_step
@@ -374,6 +386,10 @@ class ExpertPredictor:
                 )
             )
 
+            stats = self._stats[expert_id]
+
+            distance = stats.average_distance
+
             score = (
                 self.frequency_weight
                 * frequency_score
@@ -390,6 +406,7 @@ class ExpertPredictor:
                     frequency_score=frequency_score,
                     recency_score=recency_score,
                     transition_score=transition_score,
+                    distance=distance,
                 )
             )
 

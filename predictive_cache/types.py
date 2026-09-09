@@ -17,6 +17,9 @@ class ExpertStats:
     hit_count: int = 0
     miss_count: int = 0
 
+    distance_sum: int = 0
+    distance_count: int = 0
+
     @property
     def access_count(self) -> int:
         """Number of cache lookups recorded for this expert."""
@@ -32,6 +35,14 @@ class ExpertStats:
 
         return self.hit_count / total
 
+    @property
+    def average_distance(self) -> float | None:
+        """Average routing-event distance between observations."""
+        if self.distance_count == 0:
+            return None
+
+        return self.distance_sum / self.distance_count
+
 
 @dataclass(slots=True)
 class ExpertPrediction:
@@ -42,6 +53,7 @@ class ExpertPrediction:
     frequency_score: float = 0.0
     recency_score: float = 0.0
     transition_score: float = 0.0
+    distance: float | None = None
 
 
 @dataclass(slots=True)
